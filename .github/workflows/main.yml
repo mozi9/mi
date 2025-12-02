@@ -100,6 +100,9 @@ jobs:
       - name: Delete corresponding files in target repository
         id: delete-files
         run: |
+          # 禁用严格错误处理，允许算术运算返回非零
+          set +e
+          
           deleted_count=0
           not_found_count=0
           error_count=0
@@ -118,14 +121,15 @@ jobs:
               # 直接删除文件
               if rm -f "$file_path"; then
                 echo "✅ Deleted: $file_path"
-                ((deleted_count++))
+                # 使用更安全的计数方式
+                deleted_count=$((deleted_count + 1))
               else
                 echo "❌ Error: $file_path"
-                ((error_count++))
+                error_count=$((error_count + 1))
               fi
             else
               echo "⚠️ Not found: $file_path"
-              ((not_found_count++))
+              not_found_count=$((not_found_count + 1))
             fi
           done < file_list.txt
           
@@ -140,8 +144,13 @@ jobs:
           echo "Errors: $error_count"
           
           # 只有全部失败才报错
-          [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ] && exit 1
-          exit 0
+          if [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ]; then
+            echo "All deletion attempts failed"
+            exit 1
+          else
+            echo "Operation completed successfully"
+            exit 0
+          fi
           
       - name: Configure Git for personal commits
         if: steps.delete-files.outputs.deleted_count > 0
