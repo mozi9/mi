@@ -8,16 +8,15 @@ on:
 jobs:
   sync-and-clean:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     
     steps:
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           repository: mozi9/mi
-          ref: cs  # 检出 cs 分支
+          ref: cs
           token: ${{ secrets.MOZI9_TOKEN }}
+          # 移除所有 SSH 相关配置
           
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -153,7 +152,6 @@ jobs:
         env:
           PERSONAL_TOKEN: ${{ secrets.MOZI9_TOKEN }}
         run: |
-          # 明确推送到 cs 分支
           git push https://mozi9:$PERSONAL_TOKEN@github.com/mozi9/mi.git HEAD:cs
           
       - name: Create summary
