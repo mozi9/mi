@@ -2,28 +2,28 @@ name: Sync Repository Files
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
 
 jobs:
   sync-files:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
+      - name: Checkout repository via SSH
         uses: actions/checkout@v4
         with:
           repository: mozi9/mi
           ref: cs
-          token: ${{ secrets.MOZI9_TOKEN }}
-          fetch-depth: 0  # 获取完整历史
+          ssh-key: ${{ secrets.MOZI9_SSH_KEY }}
           
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
           
-      - name: Get file list from source
-        env:
-          GITHUB_TOKEN: ${{ secrets.MOZI9_TOKEN }}
+      - name: Get file list from source repository
+        id: get-files
         run: |
           pip install requests
           
@@ -32,52 +32,135 @@ jobs:
           import os
           
           source_repo = "ApartTUSITU/kernel_xiaomi_sm8250_mod"
-          commit_hash = "75fef37"
+          short_hash = "75fef37"
+          branch = "android16-aptusitu-new"
           
-          # 直接获取提交信息
-          url = f"https://api.github.com/repos/{source_repo}/commits/{commit_hash}"
-          headers = {"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"}
+          # 获取完整哈希
+          branch_url = f"https://api.github.com/repos/{source_repo}/branches/{branch}"
+          response = requests.get(branch_url)
           
-          response = requests.get(url, headers=headers)
           if response.status_code == 200:
-              commit_data = response.json()
-              files = [file['filename'] for file in commit_data['files']]
+              branch_data = response.json()
               
-              with open('file_list.txt', 'w') as f:
-                  for file_path in files:
-                      f.write(file_path + '\n')
+              commits_url = f"https://api.github.com/repos/{source_repo}/commits?sha={branch}&per_page=100"
+              commits_response = requests.get(commits_url)
               
-              print(f"Found {len(files)} files")
+              if commits_response.status_code == 200:
+                  commits_data = commits_response.json()
+                  full_hash = None
+                  
+                  for commit in commits_data:
+                      if commit['sha'].startswith(short_hash):
+                          full_hash = commit['sha']
+                          break
+                  
+                  if full_hash:
+                      print(f"Found full hash: {full_hash}")
+                      
+                      commit_url = f"https://api.github.com/repos/{source_repo}/commits/{full_hash}"
+                      commit_response = requests.get(commit_url)
+                      
+                      if commit_response.status_code == 200:
+                          commit_data = commit_response.json()
+                          files = [file['filename'] for file in commit_data['files']]
+                          
+                          with open('file_list.txt', 'w') as f:
+                              for file_path in files:
+                                  f.write(file_path + '\n')
+                          
+                          with open('full_hash.txt', 'w') as f:
+                              f.write(full_hash)
+                          
+                          print(f"Found {len(files)} files in commit {full_hash}")
+                      else:
+                          print(f"Error fetching commit details: {commit_response.status_code}")
+                          exit(1)
+                  else:
+                      print(f"Commit with short hash {short_hash} not found")
+                      exit(1)
+              else:
+                  print(f"Error fetching commits: {commits_response.status_code}")
+                  exit(1)
           else:
-              print(f"Error: {response.status_code}")
+              print(f"Error fetching branch: {response.status_code}")
               exit(1)
           EOF
           
-      - name: Delete files
+          FULL_HASH=$(cat full_hash.txt)
+          echo "FULL_HASH=$FULL_HASH" >> $GITHUB_ENV
+          echo "FILE_COUNT=$(wc -l < file_list.txt)" >> $GITHUB_OUTPUT
+          
+      - name: Delete corresponding files
         id: delete-files
         run: |
-          deleted=0
-          not_found=0
+          set +e
+          deleted_count=0
+          not_found_count=0
+          error_count=0
           
-          if [ -f file_list.txt ]; then
-              while IFS= read -r file; do
-                  if [ -f "$file" ]; then
-                      rm -f "$file" && ((deleted++)) || echo "Error: $file"
-                  else
-                      ((not_found++))
-                  fi
-              done < file_list.txt
-          fi
+          echo "=== Starting file deletion ==="
+          echo "Files to process: $(wc -l < file_list.txt)"
           
-          echo "deleted=$deleted" >> $GITHUB_OUTPUT
-          echo "not_found=$not_found" >> $GITHUB_OUTPUT
-          echo "Deleted: $deleted, Not found: $not_found"
+          while IFS= read -r file_path; do
+            [ -z "$file_path" ] && continue
+            echo "Processing: $file_path"
+            
+            if [ -f "$file_path" ]; then
+              if rm -f "$file_path"; then
+                echo "✅ Deleted: $file_path"
+                deleted_count=$((deleted_count + 1))
+              else
+                echo "❌ Error: $file_path"
+                error_count=$((error_count + 1))
+              fi
+            else
+              echo "⚠️ Not found: $file_path"
+              not_found_count=$((not_found_count + 1))
+            fi
+          done < file_list.txt
           
-      - name: Commit and push
-        if: steps.delete-files.outputs.deleted > 0
+          echo "deleted_count=$deleted_count" >> $GITHUB_OUTPUT
+          echo "not_found_count=$not_found_count" >> $GITHUB_OUTPUT
+          echo "error_count=$error_count" >> $GITHUB_OUTPUT
+          
+          echo "Deleted: $deleted_count, Not found: $not_found_count, Errors: $error_count"
+          [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ] && exit 1
+          exit 0
+          
+      - name: Configure Git identity
+        if: steps.delete-files.outputs.deleted_count > 0
         run: |
           git config user.name "mozi9"
           git config user.email "mozi9@users.noreply.github.com"
+          
+      - name: Commit changes
+        if: steps.delete-files.outputs.deleted_count > 0
+        run: |
           git add -A
-          git commit -m "Remove KSU and SUSFS"
+          git commit -m "KSU: Remove KSU and SUSFS"
+          
+      - name: Push changes via SSH
+        if: steps.delete-files.outputs.deleted_count > 0
+        run: |
+          # SSH 方式推送
           git push origin cs
+          
+      - name: Create summary
+        run: |
+          echo "## File Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Source Repository:** ApartTUSITU/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
+          echo "**Full Hash:** $FULL_HASH" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** android16-aptusitu-new" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### File Processing Results" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Deleted files:** ${{ steps.delete-files.outputs.deleted_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Files not found:** ${{ steps.delete-files.outputs.not_found_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ❌ **Errors:** ${{ steps.delete-files.outputs.error_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 📋 **Total files processed:** ${{ steps.get-files.outputs.FILE_COUNT }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.delete-files.outputs.deleted_count }}" -eq 0 ]; then
+            echo "No files were deleted." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Changes committed and pushed to cs branch via SSH" >> $GITHUB_STEP_SUMMARY
+          fi
