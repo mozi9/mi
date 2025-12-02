@@ -15,7 +15,7 @@ jobs:
         with:
           repository: mozi9/mi
           ref: cs
-          token: ${{ secrets.MOZI9_TOKEN }}  # 添加 token 参数
+          token: ${{ secrets.MOZI9_TOKEN }}
           
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,7 +25,7 @@ jobs:
       - name: Get file list from source repository
         id: get-files
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 为 API 调用设置 token
+          GITHUB_TOKEN: ${{ secrets.MOZI9_TOKEN }}
         run: |
           pip install requests
           
@@ -140,7 +140,6 @@ jobs:
           git add -A
           git commit -m "KSU: Remove KSU and SUSFS"
           
-          # 使用更简单的推送方式
           git push origin cs
           
       - name: Create summary
@@ -156,9 +155,3 @@ jobs:
           echo "- ⚠️ **Files not found:** ${{ steps.delete-files.outputs.not_found_count }}" >> $GITHUB_STEP_SUMMARY
           echo "- ❌ **Errors:** ${{ steps.delete-files.outputs.error_count }}" >> $GITHUB_STEP_SUMMARY
           echo "- 📋 **Total files processed:** ${{ steps.get-files.outputs.FILE_COUNT }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.delete-files.outputs.deleted_count }}" -eq 0 ]; then
-            echo "No files were deleted (all files were already missing or no changes needed)." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Changes committed with message: 'KSU: Remove KSU and SUSFS'" >> $GITHUB_STEP_SUMMARY
-          fi
