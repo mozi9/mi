@@ -10,12 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout target repository
+      - name: Checkout target repository (cs branch)
         uses: actions/checkout@v4
         with:
           repository: mozi9/mi
-          ref: cs
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: cs  # 明确检出 cs 分支
+          token: ${{ secrets.MOZI9_TOKEN }}
           
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,7 +25,7 @@ jobs:
       - name: Get file list from source repository
         id: get-files
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MOZI9_TOKEN }}
         run: |
           pip install requests
           
@@ -100,7 +100,6 @@ jobs:
       - name: Delete corresponding files in target repository
         id: delete-files
         run: |
-          # 禁用严格错误处理，允许算术运算返回非零
           set +e
           
           deleted_count=0
@@ -110,18 +109,14 @@ jobs:
           echo "=== Starting file deletion ==="
           echo "Files to process: $(wc -l < file_list.txt)"
           
-          # 简单的文件删除循环
           while IFS= read -r file_path; do
-            # 跳过空行
             [ -z "$file_path" ] && continue
             
             echo "Processing: $file_path"
             
             if [ -f "$file_path" ]; then
-              # 直接删除文件
               if rm -f "$file_path"; then
                 echo "✅ Deleted: $file_path"
-                # 使用更安全的计数方式
                 deleted_count=$((deleted_count + 1))
               else
                 echo "❌ Error: $file_path"
@@ -133,7 +128,6 @@ jobs:
             fi
           done < file_list.txt
           
-          # 保存统计信息
           echo "deleted_count=$deleted_count" >> $GITHUB_OUTPUT
           echo "not_found_count=$not_found_count" >> $GITHUB_OUTPUT
           echo "error_count=$error_count" >> $GITHUB_OUTPUT
@@ -143,7 +137,6 @@ jobs:
           echo "Not found: $not_found_count" 
           echo "Errors: $error_count"
           
-          # 只有全部失败才报错
           if [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ]; then
             echo "All deletion attempts failed"
             exit 1
@@ -164,10 +157,13 @@ jobs:
           git add -A
           git commit -m "KSU: Remove KSU and SUSFS"
           
-      - name: Push changes with personal token
+      - name: Push changes to cs branch
         if: steps.delete-files.outputs.deleted_count > 0
+        env:
+          PERSONAL_TOKEN: ${{ secrets.MOZI9_TOKEN }}
         run: |
-          git push https://${{ secrets.MOZI9_TOKEN }}@github.com/mozi9/mi.git cs
+          # 推送到当前分支（cs分支）
+          git push https://mozi9:$PERSONAL_TOKEN@github.com/mozi9/mi.git
           
       - name: Create summary
         run: |
@@ -186,5 +182,5 @@ jobs:
           if [ "${{ steps.delete-files.outputs.deleted_count }}" -eq 0 ]; then
             echo "No files were deleted (all files were already missing or no changes needed)." >> $GITHUB_STEP_SUMMARY
           else
-            echo "Changes committed with message: 'KSU: Remove KSU and SUSFS'" >> $GITHUB_STEP_SUMMARY
+            echo "Changes committed and pushed to cs branch" >> $GITHUB_STEP_SUMMARY
           fi
