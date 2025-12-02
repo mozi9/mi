@@ -3,18 +3,20 @@ name: Sync and Clean Repository Files
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0'  # 每周日午夜运行
+    - cron: '0 0 * * 0'
 
 jobs:
   sync-and-clean:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
-      - name: Checkout target repository (cs branch)
+      - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           repository: mozi9/mi
-          ref: cs  # 明确检出 cs 分支
+          ref: cs  # 检出 cs 分支
           token: ${{ secrets.MOZI9_TOKEN }}
           
       - name: Set up Python
@@ -97,11 +99,10 @@ jobs:
           echo "FULL_HASH=$FULL_HASH" >> $GITHUB_ENV
           echo "FILE_COUNT=$(wc -l < file_list.txt)" >> $GITHUB_OUTPUT
           
-      - name: Delete corresponding files in target repository
+      - name: Delete corresponding files
         id: delete-files
         run: |
           set +e
-          
           deleted_count=0
           not_found_count=0
           error_count=0
@@ -111,7 +112,6 @@ jobs:
           
           while IFS= read -r file_path; do
             [ -z "$file_path" ] && continue
-            
             echo "Processing: $file_path"
             
             if [ -f "$file_path" ]; then
@@ -132,20 +132,11 @@ jobs:
           echo "not_found_count=$not_found_count" >> $GITHUB_OUTPUT
           echo "error_count=$error_count" >> $GITHUB_OUTPUT
           
-          echo "=== Summary ==="
-          echo "Deleted: $deleted_count"
-          echo "Not found: $not_found_count" 
-          echo "Errors: $error_count"
+          echo "Deleted: $deleted_count, Not found: $not_found_count, Errors: $error_count"
+          [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ] && exit 1
+          exit 0
           
-          if [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ]; then
-            echo "All deletion attempts failed"
-            exit 1
-          else
-            echo "Operation completed successfully"
-            exit 0
-          fi
-          
-      - name: Configure Git for personal commits
+      - name: Configure Git
         if: steps.delete-files.outputs.deleted_count > 0
         run: |
           git config user.name "mozi9"
@@ -157,30 +148,26 @@ jobs:
           git add -A
           git commit -m "KSU: Remove KSU and SUSFS"
           
-      - name: Push changes to cs branch
+      - name: Push to cs branch
         if: steps.delete-files.outputs.deleted_count > 0
         env:
           PERSONAL_TOKEN: ${{ secrets.MOZI9_TOKEN }}
         run: |
-          # 推送到当前分支（cs分支）
-          git push https://mozi9:$PERSONAL_TOKEN@github.com/mozi9/mi.git
+          # 明确推送到 cs 分支
+          git push https://mozi9:$PERSONAL_TOKEN@github.com/mozi9/mi.git HEAD:cs
           
       - name: Create summary
         run: |
           echo "## File Sync Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Source Repository:** ApartTUSITU/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
-          echo "**Full Hash:** $FULL_HASH" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** android16-aptusitu-new" >> $GITHUB_STEP_SUMMARY
+          echo "**Target Branch:** cs" >> $GITHUB_STEP_SUMMARY
+          echo "**Source Commit:** $FULL_HASH" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### File Processing Results" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Deleted files:** ${{ steps.delete-files.outputs.deleted_count }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ⚠️ **Files not found:** ${{ steps.delete-files.outputs.not_found_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Results" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Deleted:** ${{ steps.delete-files.outputs.deleted_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Not found:** ${{ steps.delete-files.outputs.not_found_count }}" >> $GITHUB_STEP_SUMMARY
           echo "- ❌ **Errors:** ${{ steps.delete-files.outputs.error_count }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 📋 **Total files processed:** ${{ steps.get-files.outputs.FILE_COUNT }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.delete-files.outputs.deleted_count }}" -eq 0 ]; then
-            echo "No files were deleted (all files were already missing or no changes needed)." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Changes committed and pushed to cs branch" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.delete-files.outputs.deleted_count }}" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Changes pushed to **cs** branch" >> $GITHUB_STEP_SUMMARY
           fi
