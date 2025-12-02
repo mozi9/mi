@@ -15,7 +15,7 @@ jobs:
         with:
           repository: mozi9/mi
           ref: cs
-          token: ${{ secrets.GITHUB_TOKEN }}  # 使用默认的 GITHUB_TOKEN
+          token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -38,7 +38,6 @@ jobs:
           short_hash = "75fef37"
           branch = "android16-aptusitu-new"
           
-          # 使用 GitHub API 获取提交信息
           branch_url = f"https://api.github.com/repos/{source_repo}/branches/{branch}"
           headers = {
               "Accept": "application/vnd.github.v3+json",
@@ -50,7 +49,6 @@ jobs:
           if branch_response.status_code == 200:
               branch_data = branch_response.json()
               
-              # 获取提交历史
               commits_url = f"https://api.github.com/repos/{source_repo}/commits?sha={branch}&per_page=100"
               commits_response = requests.get(commits_url, headers=headers)
               
@@ -58,7 +56,6 @@ jobs:
                   commits_data = commits_response.json()
                   full_hash = None
                   
-                  # 查找匹配的提交哈希
                   for commit in commits_data:
                       if commit['sha'].startswith(short_hash):
                           full_hash = commit['sha']
@@ -67,7 +64,6 @@ jobs:
                   if full_hash:
                       print(f"Found full hash: {full_hash}")
                       
-                      # 获取提交详情
                       commit_url = f"https://api.github.com/repos/{source_repo}/commits/{full_hash}"
                       commit_response = requests.get(commit_url, headers=headers)
                       
@@ -75,12 +71,10 @@ jobs:
                           commit_data = commit_response.json()
                           files = [file['filename'] for file in commit_data['files']]
                           
-                          # 保存文件列表
                           with open('file_list.txt', 'w') as f:
                               for file_path in files:
                                   f.write(file_path + '\n')
                           
-                          # 保存完整哈希
                           with open('full_hash.txt', 'w') as f:
                               f.write(full_hash)
                           
@@ -99,7 +93,6 @@ jobs:
               exit(1)
           EOF
           
-          # 读取完整哈希
           FULL_HASH=$(cat full_hash.txt)
           echo "FULL_HASH=$FULL_HASH" >> $GITHUB_ENV
           echo "FILE_COUNT=$(wc -l < file_list.txt)" >> $GITHUB_OUTPUT
@@ -111,25 +104,27 @@ jobs:
           not_found_count=0
           error_count=0
           
-          # 读取文件列表并处理
+          echo "=== Starting file deletion ==="
+          echo "Files to process: $(wc -l < file_list.txt)"
+          
+          # 简单的文件删除循环
           while IFS= read -r file_path; do
+            # 跳过空行
+            [ -z "$file_path" ] && continue
+            
+            echo "Processing: $file_path"
+            
             if [ -f "$file_path" ]; then
-              echo "Deleting: $file_path"
+              # 直接删除文件
               if rm -f "$file_path"; then
+                echo "✅ Deleted: $file_path"
                 ((deleted_count++))
-                
-                # 清理空目录
-                dir_path=$(dirname "$file_path")
-                if [ -d "$dir_path" ] && [ -z "$(ls -A "$dir_path" 2>/dev/null)" ]; then
-                  echo "Removing empty directory: $dir_path"
-                  rmdir "$dir_path" 2>/dev/null || true
-                fi
               else
-                echo "Error deleting: $file_path"
+                echo "❌ Error: $file_path"
                 ((error_count++))
               fi
             else
-              echo "File not found (skipping): $file_path"
+              echo "⚠️ Not found: $file_path"
               ((not_found_count++))
             fi
           done < file_list.txt
@@ -139,7 +134,14 @@ jobs:
           echo "not_found_count=$not_found_count" >> $GITHUB_OUTPUT
           echo "error_count=$error_count" >> $GITHUB_OUTPUT
           
-          echo "Deleted: $deleted_count, Not found: $not_found_count, Errors: $error_count"
+          echo "=== Summary ==="
+          echo "Deleted: $deleted_count"
+          echo "Not found: $not_found_count" 
+          echo "Errors: $error_count"
+          
+          # 只有全部失败才报错
+          [ $deleted_count -eq 0 ] && [ $error_count -gt 0 ] && exit 1
+          exit 0
           
       - name: Configure Git for personal commits
         if: steps.delete-files.outputs.deleted_count > 0
@@ -156,7 +158,6 @@ jobs:
       - name: Push changes with personal token
         if: steps.delete-files.outputs.deleted_count > 0
         run: |
-          # 使用个人令牌推送
           git push https://${{ secrets.MOZI9_TOKEN }}@github.com/mozi9/mi.git cs
           
       - name: Create summary
