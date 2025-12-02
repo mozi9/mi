@@ -1,0 +1,161 @@
+name: Sync and Clean Repository Files
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日午夜运行
+
+jobs:
+  sync-and-clean:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: mozi9/mi
+          ref: cs
+          token: ${{ secrets.MOZI9_TOKEN }}
+          
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+          
+      - name: Get file list from source repository
+        id: get-files
+        run: |
+          pip install requests
+          
+          python << 'EOF'
+          import requests
+          import json
+          import os
+          
+          source_repo = "ApartTUSITU/kernel_xiaomi_sm8250_mod"
+          short_hash = "75fef37"
+          branch = "android16-aptusitu-new"
+          
+          branch_url = f"https://api.github.com/repos/{source_repo}/branches/{branch}"
+          headers = {
+              "Accept": "application/vnd.github.v3+json",
+              "Authorization": f"token {os.getenv('GITHUB_TOKEN')}"
+          }
+          
+          branch_response = requests.get(branch_url, headers=headers)
+          
+          if branch_response.status_code == 200:
+              branch_data = branch_response.json()
+              
+              commits_url = f"https://api.github.com/repos/{source_repo}/commits?sha={branch}&per_page=100"
+              commits_response = requests.get(commits_url, headers=headers)
+              
+              if commits_response.status_code == 200:
+                  commits_data = commits_response.json()
+                  full_hash = None
+                  
+                  for commit in commits_data:
+                      if commit['sha'].startswith(short_hash):
+                          full_hash = commit['sha']
+                          break
+                  
+                  if full_hash:
+                      print(f"Found full hash: {full_hash}")
+                      
+                      commit_url = f"https://api.github.com/repos/{source_repo}/commits/{full_hash}"
+                      commit_response = requests.get(commit_url, headers=headers)
+                      
+                      if commit_response.status_code == 200:
+                          commit_data = commit_response.json()
+                          files = [file['filename'] for file in commit_data['files']]
+                          
+                          with open('file_list.txt', 'w') as f:
+                              for file_path in files:
+                                  f.write(file_path + '\n')
+                          
+                          with open('full_hash.txt', 'w') as f:
+                              f.write(full_hash)
+                          
+                          print(f"Found {len(files)} files in commit {full_hash}")
+                      else:
+                          print(f"Error fetching commit details: {commit_response.status_code}")
+                          exit(1)
+                  else:
+                      print(f"Commit with short hash {short_hash} not found in recent 100 commits")
+                      exit(1)
+              else:
+                  print(f"Error fetching commits: {commits_response.status_code}")
+                  exit(1)
+          else:
+              print(f"Error fetching branch: {branch_response.status_code}")
+              exit(1)
+          EOF
+          
+          FULL_HASH=$(cat full_hash.txt)
+          echo "FULL_HASH=$FULL_HASH" >> $GITHUB_ENV
+          echo "FILE_COUNT=$(wc -l < file_list.txt)" >> $GITHUB_OUTPUT
+          
+      - name: Delete corresponding files in target repository
+        id: delete-files
+        run: |
+          deleted_count=0
+          not_found_count=0
+          error_count=0
+          
+          while IFS= read -r file_path; do
+            if [ -f "$file_path" ]; then
+              echo "Deleting: $file_path"
+              if rm -f "$file_path"; then
+                ((deleted_count++))
+                
+                dir_path=$(dirname "$file_path")
+                if [ -d "$dir_path" ] && [ -z "$(ls -A "$dir_path" 2>/dev/null)" ]; then
+                  echo "Removing empty directory: $dir_path"
+                  rmdir "$dir_path" 2>/dev/null || true
+                fi
+              else
+                echo "Error deleting: $file_path"
+                ((error_count++))
+              fi
+            else
+              echo "File not found (skipping): $file_path"
+              ((not_found_count++))
+            fi
+          done < file_list.txt
+          
+          echo "deleted_count=$deleted_count" >> $GITHUB_OUTPUT
+          echo "not_found_count=$not_found_count" >> $GITHUB_OUTPUT
+          echo "error_count=$error_count" >> $GITHUB_OUTPUT
+          
+          echo "Deleted: $deleted_count, Not found: $not_found_count, Errors: $error_count"
+          
+      - name: Commit and push changes
+        if: steps.delete-files.outputs.deleted_count > 0
+        run: |
+          git config user.name "mozi9"
+          git config user.email "mozi9@users.noreply.github.com"
+          
+          git add -A
+          git commit -m "KSU: Remove KSU and SUSFS"
+          
+          git push https://${{ secrets.MOZI9_TOKEN }}@github.com/mozi9/mi.git cs
+          
+      - name: Create summary
+        run: |
+          echo "## File Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Source Repository:** ApartTUSITU/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
+          echo "**Full Hash:** $FULL_HASH" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** android16-aptusitu-new" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### File Processing Results" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Deleted files:** ${{ steps.delete-files.outputs.deleted_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚠️ **Files not found:** ${{ steps.delete-files.outputs.not_found_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ❌ **Errors:** ${{ steps.delete-files.outputs.error_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 📋 **Total files processed:** ${{ steps.get-files.outputs.FILE_COUNT }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.delete-files.outputs.deleted_count }}" -eq 0 ]; then
+            echo "No files were deleted (all files were already missing or no changes needed)." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Changes committed with message: 'KSU: Remove KSU and SUSFS'" >> $GITHUB_STEP_SUMMARY
+          fi
