@@ -15,7 +15,7 @@ jobs:
         with:
           repository: mozi9/mi
           ref: cs
-          token: ${{ secrets.MOZI9_TOKEN }}
+          token: ${{ secrets.MOZI9_TOKEN }}  # 添加 token 参数
           
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -24,6 +24,8 @@ jobs:
           
       - name: Get file list from source repository
         id: get-files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 为 API 调用设置 token
         run: |
           pip install requests
           
@@ -138,7 +140,8 @@ jobs:
           git add -A
           git commit -m "KSU: Remove KSU and SUSFS"
           
-          git push https://${{ secrets.MOZI9_TOKEN }}@github.com/mozi9/mi.git cs
+          # 使用更简单的推送方式
+          git push origin cs
           
       - name: Create summary
         run: |
