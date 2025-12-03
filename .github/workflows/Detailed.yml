@@ -32,55 +32,59 @@ jobs:
         )
         
         # 按状态分类存储文件
-        declare -A added_files
-        declare -A modified_files
-        declare -A deleted_files
-        declare -A file_commits
+        added_files=()
+        modified_files=()
+        deleted_files=()
         
         echo "分析 ${#commits[@]} 个提交..."
         
         for commit in "${commits[@]}"; do
           echo "分析提交: $commit"
           
-          files=$(git show --name-status --oneline "$commit" 2>/dev/null | tail -n +2)
-          
-          if [ -z "$files" ]; then
-            echo "  ⚠️ 提交没有文件或提交不存在"
+          # 检查提交是否存在
+          if ! git show --oneline "$commit" &>/dev/null; then
+            echo "  ⚠️ 提交不存在: $commit"
             continue
           fi
           
-          a_count=0; m_count=0; d_count=0
-          while IFS= read -r line; do
-            [ -z "$line" ] && continue
+          # 获取提交的文件变更（简化方法）
+          files=$(git show --name-only --oneline "$commit" 2>/dev/null | tail -n +2)
+          
+          if [ -z "$files" ]; then
+            echo "  ⚠️ 提交没有文件"
+            continue
+          fi
+          
+          file_count=0
+          while IFS= read -r file; do
+            if [ -z "$file" ] || [ "$file" = "" ]; then
+              continue
+            fi
             
-            status=$(echo "$line" | cut -f1)
-            file=$(echo "$line" | cut -f2-)
-            [ -z "$file" ] && continue
+            # 简单方法：记录所有文件，不区分状态
+            # 因为我们需要的是所有文件，包括删除的
+            echo "  📁 $file"
             
-            case "$status" in
-              "A")
-                added_files["$file"]=1
-                ((a_count++))
-                echo "  🆕 新增: $file"
-                ;;
-              "M")
-                modified_files["$file"]=1
-                ((m_count++))
-                echo "  ✏️ 修改: $file"
-                ;;
-              "D")
-                deleted_files["$file"]=1
-                ((d_count++))
-                echo "  🗑️ 删除: $file"
-                ;;
-            esac
+            # 检查文件状态（简单方法）
+            if git show "$commit" --name-status | grep -q "^D.*$file"; then
+              deleted_files+=("$file")
+              echo "    🗑️ 删除"
+            elif git show "$commit" --name-status | grep -q "^A.*$file"; then
+              added_files+=("$file")
+              echo "    🆕 新增"
+            elif git show "$commit" --name-status | grep -q "^M.*$file"; then
+              modified_files+=("$file")
+              echo "    ✏️ 修改"
+            else
+              # 默认认为是修改
+              modified_files+=("$file")
+              echo "    ✏️ 修改"
+            fi
             
-            file_commits["$file"]="$commit"
+            ((file_count++))
           done <<< "$files"
           
-          [ $a_count -gt 0 ] && echo "  新增: $a_count"
-          [ $m_count -gt 0 ] && echo "  修改: $m_count"
-          [ $d_count -gt 0 ] && echo "  删除: $d_count"
+          echo "  本提交处理文件数: $file_count"
         done
         
         echo "========================================"
@@ -91,34 +95,16 @@ jobs:
         echo "📁 总文件数: $((${#added_files[@]} + ${#modified_files[@]} + ${#deleted_files[@]}))"
         echo "========================================"
         
-        # 保存各状态文件列表
-        save_file_list() {
-          local files_array=("$@")
-          local status="$1"
-          local filename="$2"
-          shift 2
-          
-          if [ ${#files_array[@]} -gt 0 ]; then
-            for file in $(printf "%s\n" "${files_array[@]}" | sort); do
-              echo "$file" >> "$filename"
-            done
-            echo "✅ 已保存: $filename (${#files_array[@]} 个文件)"
-          else
-            echo "⚠️ 没有$status文件"
-            touch "$filename"  # 创建空文件
-          fi
-        }
-        
-        # 保存新增文件列表
-        printf "%s\n" "${!added_files[@]}" | sort > added_files.txt
-        printf "%s\n" "${!modified_files[@]}" | sort > modified_files.txt
-        printf "%s\n" "${!deleted_files[@]}" | sort > deleted_files.txt
+        # 去重并保存文件列表
+        printf "%s\n" "${added_files[@]}" | sort -u > added_files.txt
+        printf "%s\n" "${modified_files[@]}" | sort -u > modified_files.txt
+        printf "%s\n" "${deleted_files[@]}" | sort -u > deleted_files.txt
         
         # 输出统计信息
-        echo "added_count=${#added_files[@]}" >> $GITHUB_OUTPUT
-        echo "modified_count=${#modified_files[@]}" >> $GITHUB_OUTPUT
-        echo "deleted_count=${#deleted_files[@]}" >> $GITHUB_OUTPUT
-        echo "total_analyzed=$((${#added_files[@]} + ${#modified_files[@]} + ${#deleted_files[@]}))" >> $GITHUB_OUTPUT
+        echo "added_count=$(wc -l < added_files.txt)" >> $GITHUB_OUTPUT
+        echo "modified_count=$(wc -l < modified_files.txt)" >> $GITHUB_OUTPUT
+        echo "deleted_count=$(wc -l < deleted_files.txt)" >> $GITHUB_OUTPUT
+        echo "total_analyzed=$(($(wc -l < added_files.txt) + $(wc -l < modified_files.txt) + $(wc -l < deleted_files.txt)))" >> $GITHUB_OUTPUT
 
     - name: Upload analysis results
       uses: actions/upload-artifact@v4
@@ -326,28 +312,22 @@ jobs:
           if [ $total_deleted -gt 30 ]; then
             echo "> 显示前30个删除文件，完整列表请下载artifact" >> $GITHUB_STEP_SUMMARY
           fi
-        else
-          echo "## 🗑️ 删除文件" >> $GITHUB_STEP_SUMMARY
-          echo "没有确认删除的文件" >> $GITHUB_STEP_SUMMARY
         fi
-        
-        # 显示缺失文件列表
-        if [ -f "verification-results/missing_added.txt" ] && [ -s "verification-results/missing_added.txt" ]; then
-          echo "## ❌ 缺失的新增文件" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          head -20 verification-results/missing_added.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [ -f "verification-results/missing_modified.txt" ] && [ -s "verification-results/missing_modified.txt" ]; then
-          echo "## ❌ 缺失的修改文件" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          head -20 verification-results/missing_modified.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
-        
+
+    - name: Show detailed deleted files
+      run: |
+        echo "## 📋 详细删除文件列表" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📥 下载详细结果" >> $GITHUB_STEP_SUMMARY
-        echo "完整文件列表和验证结果可在Artifacts中下载:" >> $GITHUB_STEP_SUMMARY
-        echo "- **commit-analysis-results**: 提交分析结果" >> $GITHUB_STEP_SUMMARY
-        echo "- **file-verification-results**: 文件验证结果" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "analysis-results/deleted_files.txt" ]; then
+          deleted_count=$(wc -l < analysis-results/deleted_files.txt)
+          echo "**总共标记为删除的文件**: $deleted_count 个" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $deleted_count -gt 0 ]; then
+            echo "### 所有删除文件:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -50 analysis-results/deleted_files.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
