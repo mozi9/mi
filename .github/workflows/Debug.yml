@@ -1,4 +1,4 @@
-name: Create Branch via API
+name: Create New cs Branch via API
 
 on:
   workflow_dispatch:
@@ -6,18 +6,17 @@ on:
 jobs:
   create-branch:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Get latest commit SHA
-      id: get-commit
+    - name: Get source branch commit SHA
+      id: get-sha
       run: |
-        COMMIT_SHA=$(curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
+        SHA=$(curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
           "https://api.github.com/repos/mozi9/mi/git/refs/heads/cc" | \
           jq -r '.object.sha')
-        echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-        echo "Source commit SHA: $COMMIT_SHA"
+        echo "commit_sha=$SHA" >> $GITHUB_OUTPUT
+        echo "源分支 cc 的最新提交: $SHA"
 
-    - name: Create branch via API
+    - name: Create new cs branch
       run: |
         curl -X POST \
           -H "Authorization: token ${{ secrets.MOZI9 }}" \
@@ -25,12 +24,13 @@ jobs:
           "https://api.github.com/repos/mozi9/kernel_xiaomi_sm8250/git/refs" \
           -d '{
             "ref": "refs/heads/cs",
-            "sha": "${{ steps.get-commit.outputs.commit_sha }}"
+            "sha": "${{ steps.get-sha.outputs.commit_sha }}"
           }'
-        echo "✅ 通过API创建分支完成"
+        echo "✅ 新分支 cs 创建成功！"
 
-    - name: Verify branch creation
+    - name: Verify new branch
       run: |
         curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
           "https://api.github.com/repos/mozi9/kernel_xiaomi_sm8250/branches/cs" | \
           jq '{name: .name, commit: .commit.sha}'
+        echo "✅ 验证完成"
