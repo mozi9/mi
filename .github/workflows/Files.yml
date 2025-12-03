@@ -156,7 +156,7 @@ jobs:
         ssh-keyscan github.com >> ~/.ssh/known_hosts
         chmod 600 ~/.ssh/known_hosts
 
-    - name: Push changes with retry
+    - name: Push changes with simple SSH
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       run: |
@@ -164,36 +164,23 @@ jobs:
         
         echo "=== 推送变更 ==="
         
-        # 写入SSH私钥
+        # 直接写入SSH私钥（不进行任何处理）
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
+        
+        # 显示私钥信息（前几行）
+        echo "私钥格式检查:"
+        head -3 ~/.ssh/id_rsa
         
         # 配置远程URL为SSH
         git remote set-url origin git@github.com:mozi9/mi.git
         
         echo "测试SSH连接..."
-        ssh -T git@github.com || true
+        ssh -o ConnectTimeout=10 -T git@github.com 2>&1 | head -3 || true
         
         echo "开始推送..."
-        retry_count=0
-        max_retries=3
-        
-        while [ $retry_count -lt $max_retries ]; do
-          echo "尝试推送 ($((retry_count + 1))/$max_retries)..."
-          if GIT_SSH_COMMAND="ssh -i ~/.ssh/id_rsa -o ConnectTimeout=30" git push origin cs; then
-            echo "✅ 推送成功"
-            break
-          else
-            ((retry_count++))
-            if [ $retry_count -lt $max_retries ]; then
-              echo "⚠️ 推送失败，10秒后重试..."
-              sleep 10
-            else
-              echo "❌ 推送失败，达到最大重试次数"
-              exit 1
-            fi
-          fi
-        done
+        # 使用简单的推送命令
+        GIT_SSH_COMMAND="ssh -i ~/.ssh/id_rsa -o ConnectTimeout=30" git push origin cs
         
         echo "✅ 推送完成"
 
@@ -215,6 +202,7 @@ jobs:
         echo "- **执行时间**: $(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
         echo "- **推送方式**: SSH" >> $GITHUB_STEP_SUMMARY
         echo "- **提交作者**: mozi9" >> $GITHUB_STEP_SUMMARY
+        echo "- **作者邮箱**: 208763397+mozi9@users.noreply.github.com" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 📝 提交信息" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
