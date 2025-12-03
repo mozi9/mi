@@ -1,39 +1,58 @@
-name: Auto Sync Branch
+name: Branch Sync with Privacy Email
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *'  # 每天UTC时间00:00自动运行
-  push:
-    branches: [ cs ]
+    inputs:
+      source-branch:
+        description: 'Source branch name'
+        required: true
+        default: 'cs'
+      target-branch:
+        description: 'Target branch name'
+        required: true
+        default: 'cs'
 
 jobs:
   sync-branches:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 给工作流写入权限
+      contents: write
     
     steps:
     - name: Checkout source repository
       uses: actions/checkout@v4
       with:
         repository: mozi9/mi
-        ref: cs
+        ref: ${{ github.event.inputs.source-branch }}
         path: source-repo
+        token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Setup Git identity
+    - name: Setup Git identity with privacy email
       run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "mozi9"
+        git config --global user.email "mozi9@users.noreply.github.com"
+        git config --global push.default simple
+
+    - name: Verify Git configuration
+      run: |
+        echo "Git配置验证:"
+        echo "用户名: $(git config --global user.name)"
+        echo "邮箱: $(git config --global user.email)"
 
     - name: Add target remote
       run: |
         cd source-repo
-        git remote add target https://github.com/mozi9/kernel_xiaomi_sm8250.git
+        git remote add target https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/mozi9/kernel_xiaomi_sm8250.git
 
     - name: Push to target repository
       run: |
         cd source-repo
-        git push target cs:cs --force
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        git push target ${{ github.event.inputs.source-branch }}:${{ github.event.inputs.target-branch }} --force
+        echo "✅ 分支同步完成"
+
+    - name: Show commit author info
+      run: |
+        cd source-repo
+        echo "最新提交信息:"
+        git log -1 --pretty=format:"作者: %an <%ae>"
+        echo "提交时间: $(git log -1 --pretty=format:%cd)"
