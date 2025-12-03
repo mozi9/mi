@@ -1,36 +1,37 @@
-name: Create New cs Branch via API
+name: Create and Push cs Branch
 
 on:
   workflow_dispatch:
 
 jobs:
-  create-branch:
+  push-branch:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-    - name: Get source branch commit SHA
-      id: get-sha
+    - name: Clone source repository
       run: |
-        SHA=$(curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
-          "https://api.github.com/repos/mozi9/mi/git/refs/heads/cc" | \
-          jq -r '.object.sha')
-        echo "commit_sha=$SHA" >> $GITHUB_OUTPUT
-        echo "源分支 cc 的最新提交: $SHA"
+        rm -rf source-repo
+        git clone https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/mi.git -b cc source-repo
+        cd source-repo
+        echo "✅ 源仓库克隆完成，提交数: $(git rev-list --count HEAD)"
 
-    - name: Create new cs branch
+    - name: Configure Git
       run: |
-        curl -X POST \
-          -H "Authorization: token ${{ secrets.MOZI9 }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/mozi9/kernel_xiaomi_sm8250/git/refs" \
-          -d '{
-            "ref": "refs/heads/cs",
-            "sha": "${{ steps.get-sha.outputs.commit_sha }}"
-          }'
-        echo "✅ 新分支 cs 创建成功！"
+        cd source-repo
+        git config user.name "mozi9"
+        git config user.email "mozi9@users.noreply.github.com"
 
-    - name: Verify new branch
+    - name: Push to new branch
       run: |
-        curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
-          "https://api.github.com/repos/mozi9/kernel_xiaomi_sm8250/branches/cs" | \
-          jq '{name: .name, commit: .commit.sha}'
-        echo "✅ 验证完成"
+        cd source-repo
+        echo "开始推送到新分支 cs..."
+        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git HEAD:cs
+        echo "✅ 推送完成！"
+
+    - name: Verify push
+      run: |
+        cd source-repo
+        echo "验证推送结果："
+        git ls-remote https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git cs
+        echo "✅ 新分支 cs 创建并推送成功！"
