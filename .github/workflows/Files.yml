@@ -29,24 +29,21 @@ jobs:
         git config --global user.name "mozi9"
         git config --global user.email "208763397+mozi9@users.noreply.github.com"
 
-    - name: Debug source repository structure
+    - name: Check directory structure
       run: |
-        echo "=== 源仓库文件结构调试 ==="
-        cd source-repo
-        echo "当前目录: $(pwd)"
-        echo "目录内容:"
-        ls -la
-        echo "=== 检查关键目录 ==="
-        ls -la drivers/ 2>/dev/null && echo "drivers目录存在" || echo "drivers目录不存在"
-        ls -la fs/ 2>/dev/null && echo "fs目录存在" || echo "fs目录不存在"
-        ls -la include/linux/ 2>/dev/null && echo "include/linux目录存在" || echo "include/linux目录不存在"
-        ls -la kernel/ 2>/dev/null && echo "kernel目录存在" || echo "kernel目录不存在"
+        echo "=== 检查目录结构 ==="
+        echo "当前工作目录: $(pwd)"
+        echo "源仓库目录内容:"
+        ls -la source-repo/
+        echo "目标仓库目录内容:"
+        ls -la target-repo/
+        echo "目标仓库drivers目录:"
+        ls -la target-repo/drivers/ 2>/dev/null || echo "drivers目录不存在，将创建"
 
-    - name: Find and copy files with detailed logging
+    - name: Find and copy files
       run: |
-        cd source-repo
-        
         echo "=== 开始查找和复制文件 ==="
+        cd source-repo
         
         # 定义要查找的文件列表
         files=(
@@ -86,59 +83,52 @@ jobs:
         )
         
         copied_count=0
-        not_found_count=0
-        found_files=()
-        not_found_files=()
         
         echo "开始检查 ${#files[@]} 个文件..."
         
         for file in "${files[@]}"; do
           if [ -f "$file" ]; then
             echo "✅ 找到文件: $file"
-            target_dir="../target-repo/$(dirname "$file")"
+            
+            # 创建目标目录（使用绝对路径）
+            target_dir="$(pwd)/../target-repo/$(dirname "$file")"
+            echo "创建目录: $target_dir"
             mkdir -p "$target_dir"
-            cp -v "$file" "$target_dir/"
+            
+            # 复制文件（使用绝对路径）
+            source_file="$(pwd)/$file"
+            echo "复制: $source_file -> $target_dir/"
+            cp "$source_file" "$target_dir/"
+            
             ((copied_count++))
-            found_files+=("$file")
+            echo "✅ 复制完成: $file"
           else
             echo "❌ 文件不存在: $file"
-            ((not_found_count++))
-            not_found_files+=("$file")
           fi
         done
         
         echo "========================================"
-        echo "📊 文件复制统计报告:"
+        echo "📊 文件复制统计:"
         echo "✅ 成功复制: $copied_count 个文件"
-        echo "❌ 未找到: $not_found_count 个文件"
         echo "========================================"
         
-        if [ $copied_count -gt 0 ]; then
-          echo "📁 成功复制的文件:"
-          printf '%s\n' "${found_files[@]}"
-        fi
-        
-        if [ $not_found_count -gt 0 ]; then
-          echo "⚠️  未找到的文件:"
-          printf '%s\n' "${not_found_files[@]}"
-        fi
-        
         if [ $copied_count -eq 0 ]; then
-          echo "❌ 错误: 没有找到任何目标文件，任务终止"
+          echo "❌ 错误: 没有找到任何目标文件"
           exit 1
         fi
-        
-        echo "✅ 文件复制完成，将继续提交流程"
 
-    - name: Check changes before commit
+    - name: Verify copied files
       run: |
+        echo "=== 验证复制的文件 ==="
         cd target-repo
-        echo "=== 检查目标仓库的变更 ==="
-        echo "当前目录: $(pwd)"
-        echo "变更的文件列表:"
-        git status --porcelain || echo "无变更或git状态检查失败"
-        echo "文件变更详情:"
-        git diff --name-status || echo "无差异或diff检查失败"
+        
+        # 检查复制的文件是否存在
+        echo "检查目标仓库中的文件:"
+        find . -name "*.c" -o -name "*.h" -o -name "Makefile" | head -20
+        echo "drivers目录内容:"
+        ls -la drivers/ 2>/dev/null || echo "drivers目录不存在"
+        echo "fs目录内容:"
+        ls -la fs/ 2>/dev/null || echo "fs目录不存在"
 
     - name: Commit and push changes
       env:
@@ -148,14 +138,25 @@ jobs:
         
         echo "=== 开始提交和推送 ==="
         
+        # 检查git状态
+        echo "Git状态:"
+        git status --short
+        
         # 检查是否有文件变更
         if git diff --quiet && git diff --staged --quiet; then
-          echo "⚠️  没有检测到文件变更，跳过提交"
-          exit 0
+          echo "⚠️  没有检测到文件变更"
+          # 检查是否有未跟踪的文件
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "发现未跟踪的文件，将添加到git"
+            git add .
+          else
+            echo "没有未跟踪的文件，跳过提交"
+            exit 0
+          fi
+        else
+          echo "📝 添加变更文件到暂存区..."
+          git add .
         fi
-        
-        echo "📝 添加文件到暂存区..."
-        git add .
         
         echo "💾 创建提交..."
         git commit -m "fs: Bump SuSFS version to v2.0.0
@@ -180,12 +181,3 @@ jobs:
         echo "- **执行时间**: $(date)" >> $GITHUB_STEP_SUMMARY
         echo "- **推送方式**: SSH" >> $GITHUB_STEP_SUMMARY
         echo "- **提交作者**: mozi9" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 提交信息" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "fs: Bump SuSFS version to v2.0.0" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "https://gitlab.com/simonpunk/susfs4ksu/-/commit/b70de6a2f1574a3ac8cb979648f397494391a8a0" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Co-authored-by: simonpunk <simonpunk2016@gmail.com>" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
