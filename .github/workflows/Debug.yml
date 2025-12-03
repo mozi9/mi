@@ -1,34 +1,32 @@
-name: Debug Sync Issue
+name: Sync SuSFS Files
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug:
+  sync-susfs:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 30
+
     steps:
-    - name: Check Secret Existence
+    - name: Verify Secret Exists
       run: |
-        echo "MOZI9_TOKEN exists: ${{ secrets.MOZI9_TOKEN != '' }}"
-        echo "GITHUB_TOKEN exists: ${{ secrets.GITHUB_TOKEN != '' }}"
-        
-    - name: Test API Access with Token
+        echo "MOZI9 exists: ${{ secrets.MOZI9 != '' }}"
+
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+      with:
+        repository: mozi9/mi
+        ref: cs
+        path: source-repo
+        token: ${{ secrets.MOZI9 }}  # 改为 MOZI9
+
+    - name: Configure Git
       run: |
-        # 测试令牌是否能访问API
-        response=$(curl -s -H "Authorization: token ${{ secrets.MOZI9_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/user)
-        echo "API Response: $response"
-        
-    - name: Test Repository Access
+        git config --global user.name "mozi9"
+        git config --global user.email "mozi9@users.noreply.github.com"
+
+    - name: Push to target repository
       run: |
-        # 测试是否能访问源仓库
-        curl -H "Authorization: token ${{ secrets.MOZI9_TOKEN }}" \
-          https://api.github.com/repos/mozi9/mi | jq '{name: .name, permissions: .permissions}'
-          
-    - name: Manual Clone Test
-      run: |
-        # 手动测试克隆操作
-        git clone https://${{ secrets.MOZI9_TOKEN }}@github.com/mozi9/mi.git -b cs manual-test
-        cd manual-test && echo "Manual clone successful!"
+        cd source-repo
+        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git cs:cs --force
