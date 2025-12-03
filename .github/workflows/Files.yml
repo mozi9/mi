@@ -2,9 +2,6 @@ name: Sync SuSFS Files
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 0'  # 每周日午夜运行
-
 jobs:
   sync-susfs:
     runs-on: ubuntu-latest
