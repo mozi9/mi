@@ -150,12 +150,6 @@ rm -rf anykernel/
 echo "Clone AnyKernel3 for packing kernel (repo: https://github.com/liyafe1997/AnyKernel3)"
 git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel
 
-# Add date to local version
-local_version_str="-perf"
-local_version_date_str="-$(date +%Y%m%d)-${GIT_COMMIT_ID}-perf"
-
-sed -i "s/${local_version_str}/${local_version_date_str}/g" arch/arm64/configs/${TARGET_DEVICE}_defconfig
-
 
 Build_AOSP(){
 # ------------- Building for AOSP -------------
@@ -164,6 +158,12 @@ Build_AOSP(){
 
     SET_CONFIG
     
+    export KBUILD_BUILD_VERSION="1"
+    export LOCALVERSION="-g92c089fc2d37"
+    export KBUILD_BUILD_USER="xiaomi-builder"
+    export KBUILD_BUILD_HOST="xiaomi-build-server"
+    export KBUILD_BUILD_TIMESTAMP="Wed Oct 29 11:41:46 UTC 2025"
+   
     make $MAKE_ARGS -j$(nproc)
 
     Image_Repack
@@ -242,6 +242,12 @@ Build_MIUI(){
     make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
 
     SET_CONFIG MIUI
+    
+    export KBUILD_BUILD_VERSION="1"
+    export LOCALVERSION="-g92c089fc2d37"
+    export KBUILD_BUILD_USER="xiaomi-builder"
+    export KBUILD_BUILD_HOST="xiaomi-build-server"
+    export KBUILD_BUILD_TIMESTAMP="Wed Oct 29 11:41:46 UTC 2025"
 
     make $MAKE_ARGS -j$(nproc)
 
@@ -290,9 +296,9 @@ SET_CONFIG(){
 
     # Enable the KSU_MANUAL_HOOK for sukisu-ultra
     if [ "$KSU_VERSION" == "sukisu-ultra" ];then
-        scripts/config --file out/.config -e KSU_MANUAL_HOOK
+        scripts/config --file out/.config -e KSU
     else
-        scripts/config --file out/.config -e KSU_MANUAL_HOOK
+        scripts/config --file out/.config -d KSU
     fi
 
     # Config KPM 
@@ -310,10 +316,12 @@ SET_CONFIG(){
 
     if [ "$SuSFS_ENABLE" -eq 1 ];then
         scripts/config --file out/.config \
+            -e KSU \
             -e KSU_SUSFS \
             -e KSU_SUSFS_HAS_MAGIC_MOUNT \
             -e KSU_SUSFS_SUS_PATH \
             -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_MAP \
             -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
             -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
             -e KSU_SUSFS_SUS_KSTAT \
@@ -389,7 +397,7 @@ Image_Repack(){
 
 Patch_KPM(){
     cd out/arch/arm64/boot
-    curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch
+    curl -LSs "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux" -o patch
     chmod +x patch
     ./patch
     if [ $? -eq 0 ]; then
