@@ -1,32 +1,30 @@
-name: Sync SuSFS Files
+name: Create New cs Branch from cc
 
 on:
   workflow_dispatch:
 
 jobs:
-  sync-susfs:
+  create-branch:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-    - name: Verify Secret Exists
-      run: |
-        echo "MOZI9 exists: ${{ secrets.MOZI9 != '' }}"
-
-    - name: Checkout source repository
+    - name: Checkout source repository (cc branch)
       uses: actions/checkout@v4
       with:
         repository: mozi9/mi
-        ref: cs
+        ref: cc
         path: source-repo
-        token: ${{ secrets.MOZI9 }}  # 改为 MOZI9
+        token: ${{ secrets.MOZI9 }}
 
     - name: Configure Git
       run: |
         git config --global user.name "mozi9"
         git config --global user.email "mozi9@users.noreply.github.com"
 
-    - name: Push to target repository
+    - name: Create new cs branch in target repository
       run: |
         cd source-repo
-        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git cs:cs --force
+        # 创建并推送新分支
+        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git HEAD:refs/heads/cs
+        echo "✅ 成功在目标仓库创建了新的 cs 分支"
