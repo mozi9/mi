@@ -1,0 +1,39 @@
+name: Auto Sync Branch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'  # 每天UTC时间00:00自动运行
+  push:
+    branches: [ cs ]
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 给工作流写入权限
+    
+    steps:
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+      with:
+        repository: mozi9/mi
+        ref: cs
+        path: source-repo
+
+    - name: Setup Git identity
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Add target remote
+      run: |
+        cd source-repo
+        git remote add target https://github.com/mozi9/kernel_xiaomi_sm8250.git
+
+    - name: Push to target repository
+      run: |
+        cd source-repo
+        git push target cs:cs --force
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
