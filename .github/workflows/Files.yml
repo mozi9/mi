@@ -3,12 +3,14 @@ name: Sync SuSFS Files
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '0 0 * * 0'  # 每周日午夜运行
 
 jobs:
   sync-susfs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write  # 需要写权限来推送代码
     
     steps:
     - name: Checkout source repository
@@ -24,13 +26,14 @@ jobs:
         repository: mozi9/mi
         ref: cs
         path: target-repo
+        token: ${{ secrets.GITHUB_TOKEN }}  # 使用内置token
 
     - name: Setup Git config
       run: |
         git config --global user.name "mozi9"
         git config --global user.email "208763397+mozi9@users.noreply.github.com"
 
-    - name: Copy files with robust error handling
+    - name: Copy files with detailed logging
       run: |
         echo "=== 开始复制文件 ==="
         set +e  # 禁用错误退出
@@ -87,7 +90,7 @@ jobs:
           target_dir="$(dirname "$target_file")"
           
           if [ -f "$source_file" ]; then
-            echo "✅ 处理: $file"
+            echo "✅ 找到文件: $file"
             mkdir -p "$target_dir"
             if cp "$source_file" "$target_file"; then
               ((copied_count++))
@@ -96,13 +99,13 @@ jobs:
               echo "  ❌ 复制失败"
             fi
           else
-            echo "❌ 跳过: $file (文件不存在)"
+            echo "❌ 文件不存在: $file"
             ((not_found_count++))
           fi
         done
         
         echo "========================================"
-        echo "📊 文件处理统计:"
+        echo "📊 文件复制统计:"
         echo "✅ 成功复制: $copied_count 个文件"
         echo "❌ 未找到: $not_found_count 个文件"
         echo "========================================"
@@ -124,72 +127,32 @@ jobs:
         file_count=$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "Makefile" \) | wc -l)
         echo "文件总数: $file_count"
 
-    - name: Commit changes
+    - name: Commit and push changes
       run: |
         cd target-repo
         
-        echo "=== 提交变更 ==="
+        echo "=== 提交和推送变更 ==="
         
         # 检查是否有变更
         if [ -z "$(git status --porcelain)" ]; then
-          echo "没有文件变更，跳过提交"
+          echo "⚠️ 没有检测到文件变更，跳过提交"
           exit 0
         fi
         
-        echo "添加文件到暂存区..."
+        echo "📝 添加文件到暂存区..."
         git add .
         
-        echo "创建提交..."
+        echo "💾 创建提交..."
         git commit -m "fs: Bump SuSFS version to v2.0.0
         
         https://gitlab.com/simonpunk/susfs4ksu/-/commit/b70de6a2f1574a3ac8cb979648f397494391a8a0
         
         Co-authored-by: simonpunk <simonpunk2016@gmail.com>"
         
-        echo "✅ 提交创建成功"
-
-    - name: Setup SSH environment
-      run: |
-        echo "=== 配置SSH环境 ==="
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
-        ssh-keyscan github.com >> ~/.ssh/known_hosts
-        chmod 600 ~/.ssh/known_hosts
-
-    - name: Push changes with simple SSH
-      env:
-        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      run: |
-        cd target-repo
-        
-        echo "=== 推送变更 ==="
-        
-        # 直接写入SSH私钥（不进行任何处理）
-        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        
-        # 显示私钥信息（前几行）
-        echo "私钥格式检查:"
-        head -3 ~/.ssh/id_rsa
-        
-        # 配置远程URL为SSH
-        git remote set-url origin git@github.com:mozi9/mi.git
-        
-        echo "测试SSH连接..."
-        ssh -o ConnectTimeout=10 -T git@github.com 2>&1 | head -3 || true
-        
-        echo "开始推送..."
-        # 使用简单的推送命令
-        GIT_SSH_COMMAND="ssh -i ~/.ssh/id_rsa -o ConnectTimeout=30" git push origin cs
+        echo "🚀 推送到远程仓库..."
+        git push origin cs
         
         echo "✅ 推送完成"
-
-    - name: Cleanup SSH key
-      if: always()
-      run: |
-        echo "=== 清理SSH密钥 ==="
-        rm -f ~/.ssh/id_rsa
-        echo "✅ 清理完成"
 
     - name: Create workflow summary
       if: always()
@@ -200,7 +163,7 @@ jobs:
         echo "- **源仓库**: YangQi0408/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
         echo "- **目标仓库**: mozi9/mi (cs分支)" >> $GITHUB_STEP_SUMMARY
         echo "- **执行时间**: $(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
-        echo "- **推送方式**: SSH" >> $GITHUB_STEP_SUMMARY
+        echo "- **认证方式**: GITHUB_TOKEN" >> $GITHUB_STEP_SUMMARY
         echo "- **提交作者**: mozi9" >> $GITHUB_STEP_SUMMARY
         echo "- **作者邮箱**: 208763397+mozi9@users.noreply.github.com" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
