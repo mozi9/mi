@@ -29,9 +29,24 @@ jobs:
         git config --global user.name "mozi9"
         git config --global user.email "208763397+mozi9@users.noreply.github.com"
 
-    - name: Find and copy files
+    - name: Debug source repository structure
+      run: |
+        echo "=== 源仓库文件结构调试 ==="
+        cd source-repo
+        echo "当前目录: $(pwd)"
+        echo "目录内容:"
+        ls -la
+        echo "=== 检查关键目录 ==="
+        ls -la drivers/ 2>/dev/null && echo "drivers目录存在" || echo "drivers目录不存在"
+        ls -la fs/ 2>/dev/null && echo "fs目录存在" || echo "fs目录不存在"
+        ls -la include/linux/ 2>/dev/null && echo "include/linux目录存在" || echo "include/linux目录不存在"
+        ls -la kernel/ 2>/dev/null && echo "kernel目录存在" || echo "kernel目录不存在"
+
+    - name: Find and copy files with detailed logging
       run: |
         cd source-repo
+        
+        echo "=== 开始查找和复制文件 ==="
         
         # 定义要查找的文件列表
         files=(
@@ -71,53 +86,106 @@ jobs:
         )
         
         copied_count=0
+        not_found_count=0
+        found_files=()
+        not_found_files=()
+        
+        echo "开始检查 ${#files[@]} 个文件..."
+        
         for file in "${files[@]}"; do
           if [ -f "$file" ]; then
-            echo "找到文件: $file"
+            echo "✅ 找到文件: $file"
             target_dir="../target-repo/$(dirname "$file")"
             mkdir -p "$target_dir"
-            cp "$file" "$target_dir/"
+            cp -v "$file" "$target_dir/"
             ((copied_count++))
+            found_files+=("$file")
           else
-            echo "跳过不存在的文件: $file"
+            echo "❌ 文件不存在: $file"
+            ((not_found_count++))
+            not_found_files+=("$file")
           fi
         done
         
-        echo "总共复制了 $copied_count 个文件"
-        if [ $copied_count -eq 0 ]; then
-          echo "没有找到任何目标文件，跳过提交"
-          exit 0
+        echo "========================================"
+        echo "📊 文件复制统计报告:"
+        echo "✅ 成功复制: $copied_count 个文件"
+        echo "❌ 未找到: $not_found_count 个文件"
+        echo "========================================"
+        
+        if [ $copied_count -gt 0 ]; then
+          echo "📁 成功复制的文件:"
+          printf '%s\n' "${found_files[@]}"
         fi
+        
+        if [ $not_found_count -gt 0 ]; then
+          echo "⚠️  未找到的文件:"
+          printf '%s\n' "${not_found_files[@]}"
+        fi
+        
+        if [ $copied_count -eq 0 ]; then
+          echo "❌ 错误: 没有找到任何目标文件，任务终止"
+          exit 1
+        fi
+        
+        echo "✅ 文件复制完成，将继续提交流程"
 
-    - name: Setup SSH and push
+    - name: Check changes before commit
+      run: |
+        cd target-repo
+        echo "=== 检查目标仓库的变更 ==="
+        echo "当前目录: $(pwd)"
+        echo "变更的文件列表:"
+        git status --porcelain || echo "无变更或git状态检查失败"
+        echo "文件变更详情:"
+        git diff --name-status || echo "无差异或diff检查失败"
+
+    - name: Commit and push changes
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       run: |
         cd target-repo
         
+        echo "=== 开始提交和推送 ==="
+        
         # 检查是否有文件变更
         if git diff --quiet && git diff --staged --quiet; then
-          echo "没有文件变更，跳过提交"
+          echo "⚠️  没有检测到文件变更，跳过提交"
           exit 0
         fi
         
-        # 直接使用SSH私钥进行推送
+        echo "📝 添加文件到暂存区..."
         git add .
+        
+        echo "💾 创建提交..."
         git commit -m "fs: Bump SuSFS version to v2.0.0
         
         https://gitlab.com/simonpunk/susfs4ksu/-/commit/b70de6a2f1574a3ac8cb979648f397494391a8a0
         
         Co-authored-by: simonpunk <simonpunk2016@gmail.com>"
         
-        # 使用SSH方式推送
-        GIT_SSH_COMMAND="ssh -i /dev/stdin" git push git@github.com:mozi9/mi.git cs <<< "$SSH_PRIVATE_KEY"
+        echo "🚀 推送到远程仓库..."
+        GIT_SSH_COMMAND="ssh -i /dev/stdin -o StrictHostKeyChecking=no" git push git@github.com:mozi9/mi.git cs <<< "$SSH_PRIVATE_KEY"
+        
+        echo "✅ 推送完成"
 
-    - name: Create summary
+    - name: Create workflow summary
       if: always()
       run: |
-        echo "同步任务完成" >> $GITHUB_STEP_SUMMARY
-        echo "- 源仓库: YangQi0408/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
-        echo "- 目标仓库: mozi9/mi (cs分支)" >> $GITHUB_STEP_SUMMARY
-        echo "- 推送方式: SSH" >> $GITHUB_STEP_SUMMARY
-        echo "- 提交作者: mozi9" >> $GITHUB_STEP_SUMMARY
-
+        echo "# 同步任务执行报告" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 任务概览" >> $GITHUB_STEP_SUMMARY
+        echo "- **源仓库**: YangQi0408/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
+        echo "- **目标仓库**: mozi9/mi (cs分支)" >> $GITHUB_STEP_SUMMARY
+        echo "- **执行时间**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **推送方式**: SSH" >> $GITHUB_STEP_SUMMARY
+        echo "- **提交作者**: mozi9" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 提交信息" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "fs: Bump SuSFS version to v2.0.0" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "https://gitlab.com/simonpunk/susfs4ksu/-/commit/b70de6a2f1574a3ac8cb979648f397494391a8a0" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Co-authored-by: simonpunk <simonpunk2016@gmail.com>" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
