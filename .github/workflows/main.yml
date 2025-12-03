@@ -11,14 +11,14 @@ jobs:
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.8.0
         with:
-          ssh-private-key: ${{ secrets.MOZI9_SSH_KEY }}
+          ssh-private-key: ${{ secrets.MOZI9 }}
       
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           repository: mozi9/mi
           ref: cs
-          ssh-key: ${{ secrets.MOZI9_SSH_KEY }}
+          ssh-key: ${{ secrets.MOZI9 }}  # 这里也使用大写
           
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -138,6 +138,12 @@ jobs:
               fh.write(f'error_files={json.dumps(error_files)}\n')
           EOF
           
+      - name: Configure Git
+        if: steps.delete-files.outputs.deleted > 0
+        run: |
+          git config user.name "mozi9"
+          git config user.email "mozi9@users.noreply.github.com"
+          
       - name: Check Git status
         if: steps.delete-files.outputs.deleted > 0
         run: |
@@ -146,16 +152,13 @@ jobs:
           git status --short
           echo ""
           
-          echo "📋 Files to be committed:"
-          git diff --cached --name-status || echo "No changes staged"
-          
-      - name: Commit changes (简洁提交信息)
+      - name: Commit changes
         if: steps.delete-files.outputs.deleted > 0
         run: |
           echo "💾 Staging changes..."
           git add -A
           
-          echo "📝 Committing with简洁信息..."
+          echo "📝 Committing changes..."
           git commit -m "KSU: Remove KSU and SUSFS"
           
           echo "✅ Commit created:"
@@ -186,30 +189,6 @@ jobs:
           echo "| ⚠️ Not Found | ${{ steps.delete-files.outputs.not_found || 0 }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ❌ Errors | ${{ steps.delete-files.outputs.error_count || 0 }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # 显示详细文件列表
-          python << 'EOF'
-          import json
-          import os
-          
-          deleted_files = json.loads('''${{ steps.delete-files.outputs.deleted_files }}''') if '''${{ steps.delete-files.outputs.deleted_files }}''' else []
-          not_found_files = json.loads('''${{ steps.delete-files.outputs.not_found_files }}''') if '''${{ steps.delete-files.outputs.not_found_files }}''' else []
-          
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
-              if deleted_files:
-                  f.write("### ✅ Successfully Deleted Files\\n")
-                  f.write("```\\n")
-                  for file in deleted_files:
-                      f.write(f"{file}\\n")
-                  f.write("```\\n\\n")
-              
-              if not_found_files:
-                  f.write("### ⚠️ Files Not Found (Already Missing)\\n")
-                  f.write("```\\n")
-                  for file in not_found_files:
-                      f.write(f"{file}\\n")
-                  f.write("```\\n\\n")
-          EOF
           
           if [ "${{ steps.delete-files.outputs.deleted || 0 }}" -gt 0 ]; then
             echo "### 🚀 Push Status" >> $GITHUB_STEP_SUMMARY
