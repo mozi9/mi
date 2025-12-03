@@ -8,50 +8,39 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      # 1. 使用 webfactory/ssh-agent 来管理 SSH 密钥（推荐方式）
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.8.0
         with:
-          ssh-private-key: ${{ secrets.mozi9 }}
+          ssh-private-key: ${{ secrets.MOZI9_SSH_KEY }}
       
-      # 2. 检出代码（使用 SSH 方式）
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           repository: mozi9/mi
           ref: cs
-          # 使用 SSH 方式检出
-          token: ${{ secrets.GITHUB_TOKEN }}  # 用于 API 调用，SSH 用于传输
-          ssh-key: ${{ secrets.mozi9 }}
+          ssh-key: ${{ secrets.MOZI9_SSH_KEY }}
           
-      # 3. 配置 Git 使用 SSH 协议
-      - name: Configure Git for SSH
-        run: |
-          git config user.name "mozi9"
-          git config user.email "mozi9@users.noreply.github.com"
-          git remote set-url origin git@github.com:mozi9/mi.git
-          
-      # 4. 测试 SSH 连接
-      - name: Test SSH connection
-        run: |
-          ssh -T git@github.com || true
-          
-      # 5. 设置 Python 环境
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
           
-      # 6. 获取文件列表
-      - name: Get file list from source
+      - name: Get file list with detailed logging
+        id: get-files
         run: |
           pip install requests
           
           python << 'EOF'
           import requests
+          import os
+          import json
           
           source_repo = "ApartTUSITU/kernel_xiaomi_sm8250_mod"
           commit_hash = "75fef37"
+          
+          print("🔍 Fetching file list from source repository...")
+          print(f"📁 Repository: {source_repo}")
+          print(f"🔖 Commit: {commit_hash}")
           
           url = f"https://api.github.com/repos/{source_repo}/commits/{commit_hash}"
           response = requests.get(url)
@@ -60,100 +49,174 @@ jobs:
               commit_data = response.json()
               files = [file['filename'] for file in commit_data['files']]
               
-              with open('file_list.txt', 'w') as f:
-                  for file_path in files:
-                      f.write(file_path + '\n')
+              print(f"✅ Found {len(files)} files in the commit:")
+              for i, file in enumerate(files, 1):
+                  print(f"  {i:2d}. {file}")
               
-              print(f"Found {len(files)} files")
+              # 将文件列表写入环境变量
+              files_json = json.dumps(files)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+                  fh.write(f'file_list={files_json}\n')
+              
+              print(f"📋 File list prepared for processing")
           else:
-              print(f"Error: {response.status_code}")
+              print(f"❌ Error fetching commit: {response.status_code}")
+              print(f"Response: {response.text}")
               exit(1)
           EOF
           
-      # 7. 删除文件
-      - name: Delete files
+      - name: Delete files with detailed logging
         id: delete-files
         run: |
-          set +e  # 禁用严格错误模式
-          deleted=0
-          not_found=0
-          error_count=0
+          echo "🗑️ Starting file deletion process..."
+          echo "========================================"
           
-          echo "=== Starting file deletion ==="
+          python << 'EOF'
+          import json
+          import os
           
-          if [ -f file_list.txt ]; then
-              while IFS= read -r file; do
-                  # 跳过空行
-                  [ -z "$file" ] && continue
+          # 从环境变量获取文件列表
+          files_json = '''${{ steps.get-files.outputs.file_list }}'''
+          files = json.loads(files_json)
+          
+          deleted_files = []
+          not_found_files = []
+          error_files = []
+          
+          print("📋 Processing file list:")
+          print("=" * 60)
+          
+          for i, file_path in enumerate(files, 1):
+              if not file_path:
+                  continue
                   
-                  echo "Processing: $file"
-                  
-                  if [ -f "$file" ]; then
-                      if rm -f "$file"; then
-                          echo "✅ Deleted: $file"
-                          deleted=$((deleted + 1))
-                      else
-                          echo "❌ Error deleting: $file"
-                          error_count=$((error_count + 1))
-                      fi
-                  else
-                      echo "⚠️ Not found: $file"
-                      not_found=$((not_found + 1))
-                  fi
-              done < file_list.txt
-          else
-              echo "❌ file_list.txt not found"
-              exit 1
-          fi
+              print(f"{i:2d}. {file_path}")
+              
+              if os.path.isfile(file_path):
+                  try:
+                      # 检查文件大小等信息
+                      file_size = os.path.getsize(file_path)
+                      os.remove(file_path)
+                      print(f"    ✅ DELETED (size: {file_size} bytes)")
+                      deleted_files.append(file_path)
+                  except Exception as e:
+                      print(f"    ❌ ERROR: {e}")
+                      error_files.append(f"{file_path} - {e}")
+              else:
+                  print(f"    ⚠️  NOT FOUND")
+                  not_found_files.append(file_path)
           
-          echo "deleted=$deleted" >> $GITHUB_OUTPUT
-          echo "not_found=$not_found" >> $GITHUB_OUTPUT
-          echo "error_count=$error_count" >> $GITHUB_OUTPUT
+          print("=" * 60)
+          print("📊 DELETION SUMMARY:")
+          print(f"✅ Successfully deleted: {len(deleted_files)} files")
+          print(f"⚠️  Not found: {len(not_found_files)} files")
+          print(f"❌ Errors: {len(error_files)} files")
           
-          echo "=== Summary ==="
-          echo "Deleted: $deleted"
-          echo "Not found: $not_found"
-          echo "Errors: $error_count"
+          # 输出详细列表
+          if deleted_files:
+              print("\n📁 DELETED FILES:")
+              for file in deleted_files:
+                  print(f"  • {file}")
           
-      # 8. 提交并推送更改
-      - name: Commit and push changes
+          if not_found_files:
+              print("\n🔍 FILES NOT FOUND:")
+              for file in not_found_files:
+                  print(f"  • {file}")
+          
+          if error_files:
+              print("\n🚫 ERRORS:")
+              for error in error_files:
+                  print(f"  • {error}")
+          
+          # 写入输出变量
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f'deleted={len(deleted_files)}\n')
+              fh.write(f'not_found={len(not_found_files)}\n')
+              fh.write(f'error_count={len(error_files)}\n')
+              fh.write(f'deleted_files={json.dumps(deleted_files)}\n')
+              fh.write(f'not_found_files={json.dumps(not_found_files)}\n')
+              fh.write(f'error_files={json.dumps(error_files)}\n')
+          EOF
+          
+      - name: Check Git status
         if: steps.delete-files.outputs.deleted > 0
         run: |
-          # 检查是否有更改
-          if git diff --quiet && git diff --staged --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
+          echo "📊 Git status before commit:"
+          echo "============================"
+          git status --short
+          echo ""
           
-          # 添加所有更改
+          echo "📋 Files to be committed:"
+          git diff --cached --name-status || echo "No changes staged"
+          
+      - name: Commit changes (简洁提交信息)
+        if: steps.delete-files.outputs.deleted > 0
+        run: |
+          echo "💾 Staging changes..."
           git add -A
           
-          # 提交更改
+          echo "📝 Committing with简洁信息..."
           git commit -m "KSU: Remove KSU and SUSFS"
           
-          # 推送更改（使用 SSH）
-          echo "Pushing to cs branch..."
-          git push origin cs
+          echo "✅ Commit created:"
+          git log --oneline -1
           
-          echo "✅ Push completed successfully"
-          
-      # 9. 创建摘要报告
-      - name: Create summary
+      - name: Push changes
+        if: steps.delete-files.outputs.deleted > 0
         run: |
-          echo "## File Sync Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Source Repository:** ApartTUSITU/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit Hash:** 75fef37" >> $GITHUB_STEP_SUMMARY
-          echo "**Target Branch:** cs" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Results" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ **Deleted files:** ${{ steps.delete-files.outputs.deleted }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ⚠️ **Files not found:** ${{ steps.delete-files.outputs.not_found }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ❌ **Errors:** ${{ steps.delete-files.outputs.error_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "🚀 Pushing to cs branch..."
+          git push origin cs
+          echo "✅ Push completed successfully!"
+          
+      - name: Create detailed workflow summary
+        run: |
+          echo "## 🔄 File Sync Operation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ "${{ steps.delete-files.outputs.deleted }}" -gt 0 ]; then
+          echo "### 📊 Operation Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source Repository:** ApartTUSITU/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit Hash:** 75fef37" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Branch:** cs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📈 File Processing Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Deleted | ${{ steps.delete-files.outputs.deleted || 0 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⚠️ Not Found | ${{ steps.delete-files.outputs.not_found || 0 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Errors | ${{ steps.delete-files.outputs.error_count || 0 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 显示详细文件列表
+          python << 'EOF'
+          import json
+          import os
+          
+          deleted_files = json.loads('''${{ steps.delete-files.outputs.deleted_files }}''') if '''${{ steps.delete-files.outputs.deleted_files }}''' else []
+          not_found_files = json.loads('''${{ steps.delete-files.outputs.not_found_files }}''') if '''${{ steps.delete-files.outputs.not_found_files }}''' else []
+          
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              if deleted_files:
+                  f.write("### ✅ Successfully Deleted Files\\n")
+                  f.write("```\\n")
+                  for file in deleted_files:
+                      f.write(f"{file}\\n")
+                  f.write("```\\n\\n")
+              
+              if not_found_files:
+                  f.write("### ⚠️ Files Not Found (Already Missing)\\n")
+                  f.write("```\\n")
+                  for file in not_found_files:
+                      f.write(f"{file}\\n")
+                  f.write("```\\n\\n")
+          EOF
+          
+          if [ "${{ steps.delete-files.outputs.deleted || 0 }}" -gt 0 ]; then
+            echo "### 🚀 Push Status" >> $GITHUB_STEP_SUMMARY
             echo "✅ Changes successfully pushed to **cs** branch" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Commit Message:** KSU: Remove KSU and SUSFS" >> $GITHUB_STEP_SUMMARY
           else
-            echo "ℹ️ No files were deleted" >> $GITHUB_STEP_SUMMARY
+            echo "### ℹ️ Status" >> $GITHUB_STEP_SUMMARY
+            echo "No files were deleted in this operation" >> $GITHUB_STEP_SUMMARY
           fi
