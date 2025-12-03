@@ -1,0 +1,123 @@
+name: Sync SuSFS Files
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  sync-susfs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+      with:
+        repository: YangQi0408/kernel_xiaomi_sm8250_mod
+        ref: android15-lineage22-mod
+        path: source-repo
+
+    - name: Checkout target repository
+      uses: actions/checkout@v4
+      with:
+        repository: mozi9/mi
+        ref: cs
+        path: target-repo
+
+    - name: Setup Git config
+      run: |
+        git config --global user.name "mozi9"
+        git config --global user.email "208763397+mozi9@users.noreply.github.com"
+
+    - name: Find and copy files
+      run: |
+        cd source-repo
+        
+        # 定义要查找的文件列表
+        files=(
+          "drivers/Makefile"
+          "drivers/input/input.c"
+          "drivers/tty/pty.c"
+          "fs/Makefile"
+          "fs/dcache.c"
+          "fs/dcache.c.orig"
+          "fs/exec.c"
+          "fs/namei.c"
+          "fs/namei.c.orig"
+          "fs/namespace.c"
+          "fs/namespace.c.orig"
+          "fs/notify/fdinfo.c"
+          "fs/open.c"
+          "fs/overlayfs/inode.c"
+          "fs/overlayfs/readdir.c"
+          "fs/overlayfs/super.c"
+          "fs/proc/cmdline.c"
+          "fs/proc/fd.c"
+          "fs/proc/task_mmu.c"
+          "fs/proc_namespace.c"
+          "fs/read_write.c"
+          "fs/readdir.c"
+          "fs/stat.c"
+          "fs/statfs.c"
+          "fs/sus_su.c"
+          "fs/susfs.c"
+          "include/linux/mount.h"
+          "include/linux/sched.h"
+          "include/linux/sus_su.h"
+          "include/linux/susfs.h"
+          "include/linux/susfs_def.h"
+          "kernel/kallsyms.c"
+          "kernel/sys.c"
+        )
+        
+        copied_count=0
+        for file in "${files[@]}"; do
+          if [ -f "$file" ]; then
+            echo "找到文件: $file"
+            target_dir="../target-repo/$(dirname "$file")"
+            mkdir -p "$target_dir"
+            cp "$file" "$target_dir/"
+            ((copied_count++))
+          else
+            echo "跳过不存在的文件: $file"
+          fi
+        done
+        
+        echo "总共复制了 $copied_count 个文件"
+        if [ $copied_count -eq 0 ]; then
+          echo "没有找到任何目标文件，跳过提交"
+          exit 0
+        fi
+
+    - name: Setup SSH and push
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      run: |
+        cd target-repo
+        
+        # 检查是否有文件变更
+        if git diff --quiet && git diff --staged --quiet; then
+          echo "没有文件变更，跳过提交"
+          exit 0
+        fi
+        
+        # 直接使用SSH私钥进行推送
+        git add .
+        git commit -m "fs: Bump SuSFS version to v2.0.0
+        
+        https://gitlab.com/simonpunk/susfs4ksu/-/commit/b70de6a2f1574a3ac8cb979648f397494391a8a0
+        
+        Co-authored-by: simonpunk <simonpunk2016@gmail.com>"
+        
+        # 使用SSH方式推送
+        GIT_SSH_COMMAND="ssh -i /dev/stdin" git push git@github.com:mozi9/mi.git cs <<< "$SSH_PRIVATE_KEY"
+
+    - name: Create summary
+      if: always()
+      run: |
+        echo "同步任务完成" >> $GITHUB_STEP_SUMMARY
+        echo "- 源仓库: YangQi0408/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
+        echo "- 目标仓库: mozi9/mi (cs分支)" >> $GITHUB_STEP_SUMMARY
+        echo "- 推送方式: SSH" >> $GITHUB_STEP_SUMMARY
+        echo "- 提交作者: mozi9" >> $GITHUB_STEP_SUMMARY
+
