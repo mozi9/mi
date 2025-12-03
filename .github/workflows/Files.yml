@@ -29,107 +29,82 @@ jobs:
         git config --global user.name "mozi9"
         git config --global user.email "208763397+mozi9@users.noreply.github.com"
 
-    - name: Find and copy files
+    - name: Copy files one by one with error handling
       run: |
-        echo "=== 开始查找和复制文件 ==="
+        echo "=== 开始复制文件 ==="
         
-        # 使用工作空间根目录作为基准
         WORKSPACE_DIR="$(pwd)"
         SOURCE_DIR="$WORKSPACE_DIR/source-repo"
         TARGET_DIR="$WORKSPACE_DIR/target-repo"
         
-        echo "工作空间: $WORKSPACE_DIR"
-        
-        # 定义要查找的文件列表
-        files=(
-          "drivers/Makefile"
-          "drivers/input/input.c"
-          "drivers/tty/pty.c"
-          "fs/Makefile"
-          "fs/dcache.c"
-          "fs/dcache.c.orig"
-          "fs/exec.c"
-          "fs/namei.c"
-          "fs/namei.c.orig"
-          "fs/namespace.c"
-          "fs/namespace.c.orig"
-          "fs/notify/fdinfo.c"
-          "fs/open.c"
-          "fs/overlayfs/inode.c"
-          "fs/overlayfs/readdir.c"
-          "fs/overlayfs/super.c"
-          "fs/proc/cmdline.c"
-          "fs/proc/fd.c"
-          "fs/proc/task_mmu.c"
-          "fs/proc_namespace.c"
-          "fs/read_write.c"
-          "fs/readdir.c"
-          "fs/stat.c"
-          "fs/statfs.c"
-          "fs/sus_su.c"
-          "fs/susfs.c"
-          "include/linux/mount.h"
-          "include/linux/sched.h"
-          "include/linux/sus_su.h"
-          "include/linux/susfs.h"
-          "include/linux/susfs_def.h"
-          "kernel/kallsyms.c"
-          "kernel/sys.c"
-        )
-        
-        copied_count=0
-        total_files=${#files[@]}
-        
-        echo "开始检查 $total_files 个文件..."
-        
-        for file in "${files[@]}"; do
-          source_file="$SOURCE_DIR/$file"
-          target_file="$TARGET_DIR/$file"
-          target_dir="$(dirname "$target_file")"
+        # 逐个文件处理，避免批量处理中的错误
+        copy_file() {
+          local file="$1"
+          local source_file="$SOURCE_DIR/$file"
+          local target_file="$TARGET_DIR/$file"
+          local target_dir="$(dirname "$target_file")"
           
           if [ -f "$source_file" ]; then
-            echo "✅ 找到文件: $file"
-            
-            # 创建目标目录
+            echo "复制: $file"
             mkdir -p "$target_dir"
-            
-            # 复制文件
             cp "$source_file" "$target_file"
-            
-            # 验证复制是否成功
-            if [ -f "$target_file" ]; then
-              echo "✅ 复制成功: $file"
-              ((copied_count++))
-            else
-              echo "❌ 复制失败: $file"
-            fi
+            return 0
           else
-            echo "❌ 文件不存在: $file"
+            echo "跳过: $file (文件不存在)"
+            return 1
           fi
-        done
+        }
         
-        echo "========================================"
-        echo "📊 文件复制统计:"
-        echo "✅ 成功复制: $copied_count/$total_files 个文件"
-        echo "========================================"
+        # 逐个复制文件
+        copy_file "drivers/Makefile"
+        copy_file "drivers/input/input.c"
+        copy_file "drivers/tty/pty.c"
+        copy_file "fs/Makefile"
+        copy_file "fs/dcache.c"
+        copy_file "fs/dcache.c.orig"
+        copy_file "fs/exec.c"
+        copy_file "fs/namei.c"
+        copy_file "fs/namei.c.orig"
+        copy_file "fs/namespace.c"
+        copy_file "fs/namespace.c.orig"
+        copy_file "fs/notify/fdinfo.c"
+        copy_file "fs/open.c"
+        copy_file "fs/overlayfs/inode.c"
+        copy_file "fs/overlayfs/readdir.c"
+        copy_file "fs/overlayfs/super.c"
+        copy_file "fs/proc/cmdline.c"
+        copy_file "fs/proc/fd.c"
+        copy_file "fs/proc/task_mmu.c"
+        copy_file "fs/proc_namespace.c"
+        copy_file "fs/read_write.c"
+        copy_file "fs/readdir.c"
+        copy_file "fs/stat.c"
+        copy_file "fs/statfs.c"
+        copy_file "fs/sus_su.c"
+        copy_file "fs/susfs.c"
+        copy_file "include/linux/mount.h"
+        copy_file "include/linux/sched.h"
+        copy_file "include/linux/sus_su.h"
+        copy_file "include/linux/susfs.h"
+        copy_file "include/linux/susfs_def.h"
+        copy_file "kernel/kallsyms.c"
+        copy_file "kernel/sys.c"
         
-        if [ $copied_count -eq 0 ]; then
-          echo "❌ 错误: 没有找到任何目标文件"
+        echo "✅ 文件复制过程完成"
+
+    - name: Check if any files were copied
+      run: |
+        cd target-repo
+        echo "=== 检查复制的文件 ==="
+        file_count=$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "Makefile" \) | wc -l)
+        echo "找到 $file_count 个相关文件"
+        
+        if [ "$file_count" -eq 0 ]; then
+          echo "❌ 没有复制任何文件，任务失败"
           exit 1
         else
-          echo "✅ 文件复制完成，继续执行下一步"
+          echo "✅ 成功复制 $file_count 个文件"
         fi
-
-    - name: Verify copied files
-      run: |
-        echo "=== 验证复制的文件 ==="
-        cd target-repo
-        
-        echo "复制的文件列表:"
-        find . -type f \( -name "*.c" -o -name "*.h" -o -name "Makefile" \) | sort
-        
-        echo "文件数量统计:"
-        find . -type f \( -name "*.c" -o -name "*.h" -o -name "Makefile" \) | wc -l
 
     - name: Commit and push changes
       env:
@@ -137,41 +112,26 @@ jobs:
       run: |
         cd target-repo
         
-        echo "=== 开始提交和推送 ==="
+        echo "=== 提交和推送 ==="
         
-        # 显示git状态
-        echo "Git状态:"
-        git status --short
-        
-        # 检查是否有变更
+        # 检查变更
         if [ -z "$(git status --porcelain)" ]; then
-          echo "⚠️  没有检测到文件变更，跳过提交"
+          echo "没有文件变更，跳过提交"
           exit 0
         fi
         
-        echo "📝 添加所有变更文件..."
         git add .
-        
-        echo "💾 创建提交..."
         git commit -m "fs: Bump SuSFS version to v2.0.0
         
         https://gitlab.com/simonpunk/susfs4ksu/-/commit/b70de6a2f1574a3ac8cb979648f397494391a8a0
         
         Co-authored-by: simonpunk <simonpunk2016@gmail.com>"
         
-        echo "🚀 推送到远程仓库..."
         GIT_SSH_COMMAND="ssh -i /dev/stdin -o StrictHostKeyChecking=no" git push git@github.com:mozi9/mi.git cs <<< "$SSH_PRIVATE_KEY"
         
         echo "✅ 推送完成"
 
-    - name: Create workflow summary
+    - name: Create summary
       if: always()
       run: |
-        echo "# 同步任务执行报告" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 任务概览" >> $GITHUB_STEP_SUMMARY
-        echo "- **源仓库**: YangQi0408/kernel_xiaomi_sm8250_mod" >> $GITHUB_STEP_SUMMARY
-        echo "- **目标仓库**: mozi9/mi (cs分支)" >> $GITHUB_STEP_SUMMARY
-        echo "- **执行时间**: $(date)" >> $GITHUB_STEP_SUMMARY
-        echo "- **推送方式**: SSH" >> $GITHUB_STEP_SUMMARY
-        echo "- **提交作者**: mozi9" >> $GITHUB_STEP_SUMMARY
+        echo "同步任务完成" >> $GITHUB_STEP_SUMMARY
