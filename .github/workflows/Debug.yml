@@ -1,34 +1,36 @@
-name: Create New cs Branch from cc
+name: Create Branch via API
+
 on:
   workflow_dispatch:
 
 jobs:
-  sync-susfs:
+  create-branch:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-    - name: Checkout source repository
-      uses: actions/checkout@v4
-      with:
-        repository: mozi9/mi
-        ref: cc
-        path: source-repo
-        token: ${{ secrets.MOZI9 }}
-        fetch-depth: 0  # 获取完整历史记录
-
-    - name: Configure Git
+    - name: Get latest commit SHA
+      id: get-commit
       run: |
-        git config --global user.name "mozi9"
-        git config --global user.email "mozi9@users.noreply.github.com"
+        COMMIT_SHA=$(curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
+          "https://api.github.com/repos/mozi9/mi/git/refs/heads/cc" | \
+          jq -r '.object.sha')
+        echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+        echo "Source commit SHA: $COMMIT_SHA"
 
-    - name: Verify Repository
+    - name: Create branch via API
       run: |
-        cd source-repo
-        git fsck
-        git reflog
+        curl -X POST \
+          -H "Authorization: token ${{ secrets.MOZI9 }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/mozi9/kernel_xiaomi_sm8250/git/refs" \
+          -d '{
+            "ref": "refs/heads/cs",
+            "sha": "${{ steps.get-commit.outputs.commit_sha }}"
+          }'
+        echo "✅ 通过API创建分支完成"
 
-    - name: Push with Full History
+    - name: Verify branch creation
       run: |
-        cd source-repo
-        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git HEAD:cs --force --no-thin
+        curl -s -H "Authorization: token ${{ secrets.MOZI9 }}" \
+          "https://api.github.com/repos/mozi9/kernel_xiaomi_sm8250/branches/cs" | \
+          jq '{name: .name, commit: .commit.sha}'
