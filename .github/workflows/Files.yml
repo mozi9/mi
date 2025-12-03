@@ -29,16 +29,7 @@ jobs:
         git config --global user.name "mozi9"
         git config --global user.email "208763397+mozi9@users.noreply.github.com"
 
-    - name: Check workspace structure
-      run: |
-        echo "=== 检查工作空间结构 ==="
-        echo "工作目录: $(pwd)"
-        echo "目录内容:"
-        ls -la
-        echo "源仓库路径: $(pwd)/source-repo"
-        echo "目标仓库路径: $(pwd)/target-repo"
-
-    - name: Find and copy files with correct paths
+    - name: Find and copy files
       run: |
         echo "=== 开始查找和复制文件 ==="
         
@@ -48,10 +39,6 @@ jobs:
         TARGET_DIR="$WORKSPACE_DIR/target-repo"
         
         echo "工作空间: $WORKSPACE_DIR"
-        echo "源目录: $SOURCE_DIR"
-        echo "目标目录: $TARGET_DIR"
-        
-        cd "$SOURCE_DIR"
         
         # 定义要查找的文件列表
         files=(
@@ -91,8 +78,9 @@ jobs:
         )
         
         copied_count=0
+        total_files=${#files[@]}
         
-        echo "开始检查 ${#files[@]} 个文件..."
+        echo "开始检查 $total_files 个文件..."
         
         for file in "${files[@]}"; do
           source_file="$SOURCE_DIR/$file"
@@ -101,16 +89,11 @@ jobs:
           
           if [ -f "$source_file" ]; then
             echo "✅ 找到文件: $file"
-            echo "源文件: $source_file"
-            echo "目标目录: $target_dir"
-            echo "目标文件: $target_file"
             
             # 创建目标目录
-            echo "创建目录: $target_dir"
             mkdir -p "$target_dir"
             
             # 复制文件
-            echo "复制文件..."
             cp "$source_file" "$target_file"
             
             # 验证复制是否成功
@@ -123,17 +106,18 @@ jobs:
           else
             echo "❌ 文件不存在: $file"
           fi
-          echo "---"
         done
         
         echo "========================================"
         echo "📊 文件复制统计:"
-        echo "✅ 成功复制: $copied_count 个文件"
+        echo "✅ 成功复制: $copied_count/$total_files 个文件"
         echo "========================================"
         
         if [ $copied_count -eq 0 ]; then
           echo "❌ 错误: 没有找到任何目标文件"
           exit 1
+        else
+          echo "✅ 文件复制完成，继续执行下一步"
         fi
 
     - name: Verify copied files
@@ -141,13 +125,11 @@ jobs:
         echo "=== 验证复制的文件 ==="
         cd target-repo
         
-        echo "目标仓库文件结构:"
-        find . -type f -name "*.c" -o -name "*.h" -o -name "Makefile" | sort | head -30
+        echo "复制的文件列表:"
+        find . -type f \( -name "*.c" -o -name "*.h" -o -name "Makefile" \) | sort
         
-        echo "检查关键目录:"
-        ls -la drivers/ 2>/dev/null && echo "drivers目录存在" || echo "drivers目录不存在"
-        ls -la fs/ 2>/dev/null && echo "fs目录存在" || echo "fs目录不存在"
-        ls -la include/linux/ 2>/dev/null && echo "include/linux目录存在" || echo "include/linux目录不存在"
+        echo "文件数量统计:"
+        find . -type f \( -name "*.c" -o -name "*.h" -o -name "Makefile" \) | wc -l
 
     - name: Commit and push changes
       env:
