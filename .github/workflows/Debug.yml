@@ -1,30 +1,34 @@
 name: Create New cs Branch from cc
-
 on:
   workflow_dispatch:
 
 jobs:
-  create-branch:
+  sync-susfs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-    - name: Checkout source repository (cc branch)
+    - name: Checkout source repository
       uses: actions/checkout@v4
       with:
         repository: mozi9/mi
         ref: cc
         path: source-repo
         token: ${{ secrets.MOZI9 }}
+        fetch-depth: 0  # 获取完整历史记录
 
     - name: Configure Git
       run: |
         git config --global user.name "mozi9"
         git config --global user.email "mozi9@users.noreply.github.com"
 
-    - name: Create new cs branch in target repository
+    - name: Verify Repository
       run: |
         cd source-repo
-        # 创建并推送新分支
-        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git HEAD:refs/heads/cs
-        echo "✅ 成功在目标仓库创建了新的 cs 分支"
+        git fsck
+        git reflog
+
+    - name: Push with Full History
+      run: |
+        cd source-repo
+        git push https://mozi9:${{ secrets.MOZI9 }}@github.com/mozi9/kernel_xiaomi_sm8250.git HEAD:cs --force --no-thin
