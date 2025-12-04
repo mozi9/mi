@@ -46,7 +46,7 @@ print_success() {
 
 # 信息函数
 print_info() {
-    color_echo "$blue" "ℹℹ $1"
+    color_echo "$blue" "ℹ $1"
 }
 
 # 警告函数
@@ -126,7 +126,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
-            print_info "忽略未知选项: $1"
+            print_warning "忽略未知选项: $1"
             shift
             ;;
     esac
@@ -172,9 +172,10 @@ fi
 # 设置ccache
 export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache_mikernel}"
 mkdir -p "$CCACHE_DIR"
-export CC="ccache clang"
+export CC="ccache gcc"
+export CXX="ccache g++"
 export PATH="/usr/lib/ccache:$PATH"
-print_info "已启用ccache"
+print_info "已启用ccache，CCACHE_DIR: $CCACHE_DIR"
 
 # Git信息
 GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
@@ -189,14 +190,13 @@ color_echo "$cyan" "Git Commit:  $GIT_COMMIT_ID"
 
 print_separator
 
-# --- 构建目录管理 ---
-print_step "构建目录设置"
+# --- 构建目录设置 ---
+BUILD_DIR="out"
+print_info "使用构建目录: $BUILD_DIR"
 
-BUILD_DIR="../build_${TARGET_DEVICE}_${GIT_COMMIT_ID}"
-print_info "使用独立构建目录: $BUILD_DIR"
-mkdir -p "$BUILD_DIR"
-
-# --- 构建函数（按正确的调用顺序定义）---
+# =============================================================================
+# 函数定义
+# =============================================================================
 
 setup_kernelsu() {
     if ! $KSU_ENABLED; then
@@ -205,49 +205,29 @@ setup_kernelsu() {
     
     print_step "设置KernelSU"
     
-    curl -LSs "https://raw.githubusercontent.com/ApartTUSITU/SukiSU-Ultra/main/kernel/setup.sh" | bash -s ApartTUSITU
-    
-    # 设置版本信息
-    if [ -f "KernelSU/kernel/Makefile" ]; then
-        local version=$(grep 'KSU_VERSION_API :=' "KernelSU/kernel/Makefile" | awk -F':=' '{print $2}' | xargs)
-        if [ -n "$version" ]; then
-            sed -i "s|KSU_VERSION_FULL :=.*|KSU_VERSION_FULL := v${version}-且听风吟|" "KernelSU/kernel/Makefile"
-            print_info "KernelSU版本: v$version"
-        fi
+    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main; then
+        print_success "KernelSU设置完成"
+    else
+        error_exit "KernelSU设置失败"
     fi
-    
-    print_success "KernelSU设置完成"
-}
-
-setup_version_info() {
-    print_info "设置版本信息..."
-    
-    # 设置版本文件
-    echo 1 > "$BUILD_DIR/.version"
-    
-    # 设置构建环境变量
-    export KBUILD_BUILD_VERSION="1"
-    export LOCALVERSION="-g92c089fc2d37"
-    export KBUILD_BUILD_USER="xiaomi-builder"
-    export KBUILD_BUILD_HOST="xiaomi-build-server"
-    export KBUILD_BUILD_TIMESTAMP="Wed Oct 29 11:41:46 UTC 2025"
-    
-    print_success "版本信息设置完成"
 }
 
 prepare_anykernel() {
     print_step "准备AnyKernel3"
     
     if [ ! -d "anykernel" ]; then
-        git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel
-        print_success "AnyKernel3下载成功"
+        if git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel; then
+            print_success "AnyKernel3下载成功"
+        else
+            error_exit "AnyKernel3下载失败"
+        fi
     else
         print_info "使用现有的AnyKernel3目录"
     fi
 }
 
 # --- KPM 补丁函数 ---
-patch_kpm() {
+apply_kpm_patch() {
     if ! $KSU_ENABLED; then
         return 0
     fi
@@ -255,28 +235,42 @@ patch_kpm() {
     print_step "应用KPM补丁"
     
     local image_dir="$BUILD_DIR/arch/arm64/boot"
+    local original_dir="$PWD"
+    
+    if [ ! -f "$image_dir/Image" ]; then
+        print_warning "未找到内核镜像，跳过KPM补丁"
+        return 0
+    fi
+    
     cd "$image_dir"
     
-    # 下载并应用补丁
-    if curl -LSs "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux" -o patch; then
-        chmod +x patch
-        if ./patch; then
-            rm -f Image
-            mv oImage Image
-            print_success "KPM补丁应用成功"
+    # KPM补丁
+    local patch_file="kpm_patch_$$"
+    if curl -LSs "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux" -o "$patch_file"; then
+        chmod +x "$patch_file"
+        if ./"$patch_file"; then
+            if [ -f "oImage" ]; then
+                # 备份原始镜像，然后替换
+                cp Image Image.orig
+                rm -f Image
+                mv oImage Image
+                print_success "KPM补丁应用成功"
+            else
+                print_warning "补丁执行成功但未生成oImage文件，使用原始镜像"
+            fi
         else
             print_warning "KPM补丁应用失败，使用原始镜像"
         fi
-        rm -f patch
+        rm -f "$patch_file"
     else
         print_warning "无法下载KPM补丁，使用原始镜像"
     fi
     
-    cd "$SCRIPT_DIR"
+    cd "$original_dir"
 }
 
 # --- 统一的镜像打包函数 ---
-Image_Repack() {
+image_repack() {
     local system_type=$1
     
     print_step "打包${system_type}镜像"
@@ -288,9 +282,9 @@ Image_Repack() {
     fi
     print_success "找到内核镜像: $image_path"
 
-    # KPM补丁
+    # 应用KPM补丁（如果启用）
     if $KSU_ENABLED; then
-        patch_kpm
+        apply_kpm_patch
     fi
 
     # 生成DTB
@@ -301,16 +295,9 @@ Image_Repack() {
         touch "$dtb_path"
     }
 
-    # 准备AnyKernel3
+    # 确保AnyKernel3目录存在
     if [ ! -d "anykernel" ]; then
-        print_info "下载AnyKernel3..."
-        if git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel; then
-            print_success "AnyKernel3下载成功"
-        else
-            error_exit "AnyKernel3下载失败"
-        fi
-    else
-        print_info "使用现有的AnyKernel3目录"
+        prepare_anykernel
     fi
 
     # 清理并准备内核文件
@@ -328,7 +315,7 @@ Image_Repack() {
     # 创建刷机包
     print_info "创建刷机包: $zip_filename"
     cd anykernel
-    if zip -r9 "$zip_filename" ./* -x .git .gitignore out/ ./*.zip 2>/dev/null; then
+    if zip -r9 "$zip_filename" ./* -x .git .gitignore out/ ./*.zip >/dev/null 2>&1; then
         mv "$zip_filename" ../
         print_success "刷机包创建成功: $zip_filename"
     else
@@ -349,20 +336,16 @@ build_kernel() {
     rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
     
-    # 设置版本信息
-    setup_version_info
-    
-    # 基本make参数
+    # make参数
     local MAKE_ARGS=(
+        "ARCH=arm64"
+        "SUBARCH=arm64" 
         "O=$BUILD_DIR"
-        "ARCH=arm64" 
-        "SUBARCH=arm64"
         "CC=clang"
         "CROSS_COMPILE=aarch64-linux-gnu-"
         "CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
         "CROSS_COMPILE_COMPAT=arm-linux-gnueabi-"
         "CLANG_TRIPLE=aarch64-linux-gnu-"
-        "-j$(nproc)"
     )
     
     # 配置defconfig
@@ -374,8 +357,8 @@ build_kernel() {
         print_info "配置KernelSU..."
         scripts/config --file "$BUILD_DIR/.config" \
             -e KSU \
-            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
             -e KSU_SUSFS \
+            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
             -e KSU_SUSFS_SUS_PATH \
             -e KSU_SUSFS_SUS_MOUNT \
             -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
@@ -387,6 +370,7 @@ build_kernel() {
             -e KSU_SUSFS_ENABLE_LOG \
             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_MULTI_MANAGER_SUPPORT \
             -e KSU_SUSFS_OPEN_REDIRECT \
             -e KSU_SUSFS_SUS_MAP \
             -e KPM
@@ -429,7 +413,7 @@ build_kernel() {
     # 开始编译
     local start_time=$(date +%s)
     print_info "开始编译..."
-    make "${MAKE_ARGS[@]}"
+    make "${MAKE_ARGS[@]}" -j$(nproc)
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
@@ -439,9 +423,6 @@ build_kernel() {
     fi
     
     print_success "${system_type}内核编译完成，耗时: $((duration / 60))分$((duration % 60))秒"
-    
-    # 打包镜像
-    Image_Repack "$system_type"
 }
 
 modify_miui_dts() {
@@ -460,6 +441,8 @@ modify_miui_dts() {
     # 备份dts
     cp -a "${dts_source}" .dts.bak
     
+    print_info "应用MIUI设备树修改..."
+  
     # 面板尺寸修正
     color_echo "$yellow" "修正面板尺寸..."
     sed -i 's/<154>/<1537>/g' ${dts_source}/dsi-panel-j1s*
@@ -515,15 +498,15 @@ modify_miui_dts() {
     sed -i 's/\/\/39 01 00 00 00 00 05 51 07 FF 00 00/39 01 00 00 00 00 05 51 07 FF 00 00/g' ${dts_source}/dsi-panel-j2s-mp-42-02-0a-dsc-cmd.dtsi
     sed -i 's/\/\/39 01 00 00 01 00 03 51 03 FF/39 01 00 00 01 00 03 51 03 FF/g' ${dts_source}/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi
     sed -i 's/\/\/39 01 00 00 11 00 03 51 03 FF/39 01 00 00 11 00 03 51 03 FF/g' ${dts_source}/dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi
-
-    print_info "MIUI设备树修改完成"
+    
+    print_success "MIUI设备树修改完成"
 }
 
 restore_miui_dts() {
     if [ -d ".dts.bak" ]; then
         rm -rf "arch/arm64/boot/dts/vendor/qcom"
         mv .dts.bak "arch/arm64/boot/dts/vendor/qcom"
-        print_info "设备树恢复完成"
+        print_success "设备树恢复完成"
     fi
 }
 
@@ -532,22 +515,26 @@ main() {
     print_step "开始内核构建流程"
     local start_time=$(date +%s)
     
-    # 设置KernelSU
+    # 环境准备
+    prepare_anykernel
     setup_kernelsu
     
-    # 准备AnyKernel3
-    prepare_anykernel
-    
-    # 构建AOSP内核
+    # AOSP构建
     if $BUILD_AOSP; then
+        print_step "开始AOSP内核构建"
         build_kernel "AOSP"
+        image_repack "AOSP"
+        print_success "AOSP内核构建完成"
     fi
     
-    # 构建MIUI内核
+    # MIUI构建
     if $BUILD_MIUI; then
+        print_step "开始MIUI内核构建"
         modify_miui_dts "MIUI"
         build_kernel "MIUI"
+        image_repack "MIUI"
         restore_miui_dts
+        print_success "MIUI内核构建完成"
     fi
     
     local end_time=$(date +%s)
