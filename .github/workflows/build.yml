@@ -42,6 +42,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
     - name: Checkout source
@@ -73,14 +74,15 @@ jobs:
       run: |
         mkdir -p $HOME/zyc-clang
         cd $HOME/zyc-clang
-        wget https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
-        tar -zxvf Clang-15.0.7-20251111.tar.gz
+        wget -q https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
+        tar -zxf Clang-15.0.7-20251111.tar.gz
         cd $GITHUB_WORKSPACE
 
     - name: Build kernel
       run: |
         # 设置环境变量
         export TOOLCHAIN_PATH="$HOME/zyc-clang"
+        export PATH="$HOME/zyc-clang/bin:$PATH"
         
         # 构建命令参数
         BUILD_CMD="./build.sh ${{ github.event.inputs.device }}"
@@ -96,26 +98,32 @@ jobs:
         elif [ "${{ github.event.inputs.build_type }}" = "miui" ]; then
           BUILD_CMD="$BUILD_CMD --miui"
         fi
-        # 如果是all，不添加参数（脚本默认构建两者）
         
-        # 显示构建命令
-        echo "构建命令: $BUILD_CMD"
-        echo "工作目录: $(pwd)"
-        echo "文件列表:"
-        ls -la
+        echo "构建配置:"
+        echo "设备: ${{ github.event.inputs.device }}"
+        echo "类型: ${{ github.event.inputs.build_type }}"
+        echo "KSU: ${{ github.event.inputs.include_ksu }}"
+        echo "命令: $BUILD_CMD"
         
-        # 检查脚本是否存在
+        # 检查必要文件
         if [ ! -f "./build.sh" ]; then
-          echo "错误: build.sh 文件不存在"
-          ls -la
+          echo "❌ 错误: build.sh 文件不存在"
           exit 1
         fi
         
-        # 给脚本执行权限
         chmod +x ./build.sh
         
-        # 执行构建
-        $BUILD_CMD
+        # 执行构建并捕获详细错误信息
+        echo "🚀 开始构建内核..."
+        set -e  # 遇到错误立即退出
+        $BUILD_CMD || {
+          echo "❌ 构建失败！错误代码: $?"
+          echo "📋 检查以下可能的问题:"
+          echo "   - 设备配置是否正确"
+          echo "   - 依赖是否完整安装"
+          echo "   - 工具链是否设置正确"
+          exit 1
+        }
 
     - name: Show ccache stats
       run: ccache -s
@@ -126,14 +134,14 @@ jobs:
         name: ${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}${{ github.event.inputs.include_ksu == 'true' && '-ksu' || '' }}-kernel
         path: |
           *.zip
-          build_*/arch/arm64/boot/Image
-          build_*/arch/arm64/boot/dtb
+        retention-days: 7
 
-    - name: Upload build logs
-      if: always()
+    - name: Upload build logs (仅失败时)
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: ${{ github.event.inputs.device }}-build-logs
         path: |
-          build_*/
+          out/
           anykernel/
+        retention-days: 3
