@@ -205,7 +205,7 @@ setup_kernelsu() {
     
     print_step "设置KernelSU"
     
-    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main; then
+    if curl -LSs "https://raw.githubusercontent.com/mozi9/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main; then
         print_success "KernelSU设置完成"
     else
         error_exit "KernelSU设置失败"
