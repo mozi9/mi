@@ -1,192 +1,467 @@
 #!/bin/bash
 
-# Some logics of this script are copied from [scripts/build_kernel]. Thanks to UtsavBalar1231.
+# =============================================================================
+# Android内核构建脚本
+# 版本: 2.0
+# =============================================================================
 
-# Ensure the script exits on error
+# 颜色定义
+yellow='\033[0;33m'
+white='\033[0m'
+red='\033[0;31m'
+green='\033[0;32m'
+blue='\033[0;34m'
+cyan='\033[0;36m'
+
+# 输出带颜色的消息函数
+color_echo() {
+    local color=$1
+    shift
+    echo -e "${color}$*${white}"
+}
+
+# 打印分隔线
+print_separator() {
+    color_echo "$cyan" "=============================================="
+}
+
+# 打印步骤标题
+print_step() {
+    local step_name="$1"
+    print_separator
+    color_echo "$green" "$step_name"
+    print_separator
+}
+
+# 错误处理函数
+error_exit() {
+    color_echo "$red" "错误: $1"
+    exit 1
+}
+
+# 成功函数
+print_success() {
+    color_echo "$green" "✓ $1"
+}
+
+# 信息函数
+print_info() {
+    color_echo "$blue" "ℹℹ $1"
+}
+
+# 警告函数
+print_warning() {
+    color_echo "$yellow" "警告: $1"
+}
+
+# 确保脚本在出错时退出
 set -e
 
-TOOLCHAIN_PATH=$HOME/toolchain/proton-clang/bin
-GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD)
-TARGET_DEVICE=$1
+# --- 动态定位脚本目录 ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || {
+    error_exit "无法切换到脚本所在目录: $SCRIPT_DIR"
+}
 
-if [ -z "$1" ]; then
-    echo "Error: No argument provided, please specific a target device." 
-    echo "If you need KernelSU, please add [ksu] as the second arg."
-    echo "Examples:"
-    echo "Build for lmi(K30 Pro/POCO F2 Pro) without KernelSU:"
-    echo "    bash build.sh lmi"
-    echo "Build for umi(Mi10) with KernelSU:"
-    echo "    bash build.sh umi ksu"
+# --- 参数解析 ---
+print_step "参数解析"
+
+# 初始化变量
+TARGET_DEVICE=""
+KSU_ENABLED=false
+BUILD_AOSP=false
+BUILD_MIUI=false
+
+# 显示使用说明
+show_usage() {
+    color_echo "$yellow" "用法: $0 <设备名称> [ksu] [--aosp|--miui]"
+    color_echo "$yellow" "示例:"
+    color_echo "$yellow" "  $0 alioth                    # 构建标准版本"
+    color_echo "$yellow" "  $0 alioth ksu               # 构建KernelSU版本"
+    color_echo "$yellow" "  $0 alioth --aosp            # 仅构建AOSP版本"
+    color_echo "$yellow" "  $0 alioth ksu --miui        # 构建MIUI+KernelSU版本"
+    echo
+    color_echo "$yellow" "可用设备:"
+    if [[ -d "$SCRIPT_DIR/arch/arm64/configs" ]]; then
+        ls "$SCRIPT_DIR/arch/arm64/configs/"*_defconfig 2>/dev/null | 
+            sed "s|.*/||; s|_defconfig||" | xargs printf "  %s\n" || 
+            color_echo "$red" "  无法读取设备配置目录"
+    else
+        color_echo "$red" "  配置目录不存在"
+    fi
+}
+
+# 解析参数
+if [ $# -lt 1 ]; then
+    show_usage
     exit 1
 fi
 
-
-
-if [ ! -d $TOOLCHAIN_PATH ]; then
-    echo "TOOLCHAIN_PATH [$TOOLCHAIN_PATH] does not exist."
-    echo "Please ensure the toolchain is there, or change TOOLCHAIN_PATH in the script to your toolchain path."
-    exit 1
+# 检查帮助参数
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    show_usage
+    exit 0
 fi
 
-echo "TOOLCHAIN_PATH: [$TOOLCHAIN_PATH]"
-export PATH="$TOOLCHAIN_PATH:$PATH"
+# 第一个参数是设备名称
+TARGET_DEVICE="$1"
+shift
 
-if ! command -v aarch64-linux-gnu-ld >/dev/null 2>&1; then
-    echo "[aarch64-linux-gnu-ld] does not exist, please check your environment."
-    exit 1
+# 处理选项参数
+while [ $# -gt 0 ]; do
+    case "$1" in
+        ksu)
+            KSU_ENABLED=true
+            print_info "启用KernelSU支持"
+            shift
+            ;;
+        --aosp)
+            BUILD_AOSP=true
+            print_info "构建AOSP版本"
+            shift
+            ;;
+        --miui)
+            BUILD_MIUI=true
+            print_info "构建MIUI版本"
+            shift
+            ;;
+        *)
+            print_info "忽略未知选项: $1"
+            shift
+            ;;
+    esac
+done
+
+# 如果没有指定构建类型，默认构建两者
+if [ "$BUILD_AOSP" = false ] && [ "$BUILD_MIUI" = false ]; then
+    BUILD_AOSP=true
+    BUILD_MIUI=true
+    print_info "默认构建AOSP和MIUI版本"
 fi
 
-if ! command -v arm-linux-gnueabi-ld >/dev/null 2>&1; then
-    echo "[arm-linux-gnueabi-ld] does not exist, please check your environment."
-    exit 1
+# 验证必需参数
+if [ -z "$TARGET_DEVICE" ]; then
+    error_exit "目标设备不能为空"
 fi
 
+# 检查设备配置
+if [[ ! -f "$SCRIPT_DIR/arch/arm64/configs/${TARGET_DEVICE}_defconfig" ]]; then
+    error_exit "未找到目标设备 [$TARGET_DEVICE] 的配置"
+fi
+
+print_success "参数解析完成"
+
+# --- 环境配置 ---
+print_step "环境配置"
+
+# 工具链路径设置
+TOOLCHAIN_PATH="${TOOLCHAIN_PATH:-$HOME/zyc-clang}"
+if [ ! -d "$TOOLCHAIN_PATH" ]; then
+    error_exit "工具链路径不存在: $TOOLCHAIN_PATH"
+fi
+
+print_info "工具链路径: $TOOLCHAIN_PATH"
+export PATH="$TOOLCHAIN_PATH/bin:$PATH"
+
+# 检查必要的工具
+print_info "检查编译工具..."
 if ! command -v clang >/dev/null 2>&1; then
-    echo "[clang] does not exist, please check your environment."
-    exit 1
+    error_exit "未找到clang"
 fi
 
-
-# Enable ccache for speed up compiling 
-export CCACHE_DIR="$HOME/.cache/ccache_mikernel" 
-export CC="ccache gcc"
-export CXX="ccache g++"
+# 设置ccache
+export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache_mikernel}"
+mkdir -p "$CCACHE_DIR"
+export CC="ccache clang"
 export PATH="/usr/lib/ccache:$PATH"
-echo "CCACHE_DIR: [$CCACHE_DIR]"
+print_info "已启用ccache"
 
+# Git信息
+GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
 
-MAKE_ARGS="ARCH=arm64 SUBARCH=arm64 O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
+# 构建配置
+print_step "构建配置摘要"
+color_echo "$cyan" "目标设备:    $TARGET_DEVICE"
+color_echo "$cyan" "KernelSU:    $($KSU_ENABLED && echo "启用" || echo "禁用")"
+color_echo "$cyan" "构建AOSP:    $($BUILD_AOSP && echo "是" || echo "否")"
+color_echo "$cyan" "构建MIUI:    $($BUILD_MIUI && echo "是" || echo "否")"
+color_echo "$cyan" "Git Commit:  $GIT_COMMIT_ID"
 
+print_separator
 
-if [ "$1" == "j1" ]; then
-    make $MAKE_ARGS -j1
-    exit
-fi
+# --- 构建目录管理 ---
+print_step "构建目录设置"
 
-if [ "$1" == "continue" ]; then
-    make $MAKE_ARGS -j$(nproc)
-    exit
-fi
+BUILD_DIR="../build_${TARGET_DEVICE}_${GIT_COMMIT_ID}"
+print_info "使用独立构建目录: $BUILD_DIR"
+mkdir -p "$BUILD_DIR"
 
-if [ ! -f "arch/arm64/configs/${TARGET_DEVICE}_defconfig" ]; then
-    echo "No target device [${TARGET_DEVICE}] found."
-    echo "Avaliable defconfigs, please choose one target from below down:"
-    ls arch/arm64/configs/*_defconfig
-    exit 1
-fi
+# --- 构建函数（按正确的调用顺序定义）---
 
-
-# Check clang is existing.
-echo "[clang --version]:"
-clang --version
-
-# Initialize variable
-KERNEL_SRC=$(pwd)
-SuSFS_ENABLE=0
-KPM_ENABLE=0
-KSU_VERSION=$2
-ADDITIONAL=$3
-TARGET_SYSTEM=$4
-
-echo "TARGET_DEVICE: $TARGET_DEVICE"
-
-KSU_ENABLE=$([[ "$KSU_VERSION" == "ksu" || "$KSU_VERSION" == "rksu" || "$KSU_VERSION" == "sukisu" || "$KSU_VERSION" == "sukisu-ultra" ]] && echo 1 || echo 0)
-
-if [ "$ADDITIONAL" == "susfs-kpm" ]; then
-    SuSFS_ENABLE=1
-    KPM_ENABLE=1
-    echo "Enable SuSFS and KPM"
-elif [ "$ADDITIONAL" == "susfs" ]; then
-    SuSFS_ENABLE=1
-    echo "Enable SuSFS"
-elif [ "$ADDITIONAL" == "kpm" ]; then
-    KPM_ENABLE=1
-    echo "Enable KPM"
-else 
-    echo "The additional function is not enabled"
-fi
-
-if [ "$KSU_VERSION" == "ksu" ]; then
-    KSU_ZIP_STR=KernelSU
-    echo "KSU is enabled"
-    curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-elif [[ "$KSU_VERSION" == "ksu" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    echo "Official KernelSU not supported SuSFS"
-    exit 1
-elif [[ "$KSU_VERSION" == "rksu" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    KSU_ZIP_STR=RKSU_SuSFS
-    echo "RKSU && SuSFS is enabled"
-    curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s susfs-v1.5.5
-elif [ "$KSU_VERSION" == "rksu" ]; then
-    KSU_ZIP_STR=RKSU
-    echo "RKSU is enabled"
-    curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s main
-elif [[ "$KSU_VERSION" == "sukisu" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    KSU_ZIP_STR=SukiSU_SuSFS
-    echo "SukiSU && SuSFS is enabled"
-    curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s susfs-dev
-elif [ "$KSU_VERSION" == "sukisu" ]; then
-    KSU_ZIP_STR=SukiSU
-    echo "SukiSU is enabled"
-    curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s dev
-elif [[ "$KSU_VERSION" == "sukisu-ultra" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    KSU_ZIP_STR="SukiSU-Ultra"
-    echo "SukiSU-Ultra && SuSFS is enabled"
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-elif [ "$KSU_VERSION" == "sukisu-ultra" ]; then
-    KSU_ZIP_STR=SukiSU-Ultra
-    echo "SukiSU-Ultra is enabled"
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
-else
-    KSU_ZIP_STR=NoKernelSU
-    echo "KSU is disabled"
-fi
-
-echo "Cleaning..."
-
-rm -rf out/
-rm -rf anykernel/
-
-echo "Clone AnyKernel3 for packing kernel (repo: https://github.com/liyafe1997/AnyKernel3)"
-git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel
-
-
-Build_AOSP(){
-# ------------- Building for AOSP -------------
-    echo "Building for AOSP......"
-    make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
-
-    SET_CONFIG
+setup_kernelsu() {
+    if ! $KSU_ENABLED; then
+        return 0
+    fi
     
+    print_step "设置KernelSU"
+    
+    curl -LSs "https://raw.githubusercontent.com/ApartTUSITU/SukiSU-Ultra/main/kernel/setup.sh" | bash -s ApartTUSITU
+    
+    # 设置版本信息
+    if [ -f "KernelSU/kernel/Makefile" ]; then
+        local version=$(grep 'KSU_VERSION_API :=' "KernelSU/kernel/Makefile" | awk -F':=' '{print $2}' | xargs)
+        if [ -n "$version" ]; then
+            sed -i "s|KSU_VERSION_FULL :=.*|KSU_VERSION_FULL := v${version}-且听风吟|" "KernelSU/kernel/Makefile"
+            print_info "KernelSU版本: v$version"
+        fi
+    fi
+    
+    print_success "KernelSU设置完成"
+}
+
+setup_version_info() {
+    print_info "设置版本信息..."
+    
+    # 设置版本文件
+    echo 1 > "$BUILD_DIR/.version"
+    
+    # 设置构建环境变量
     export KBUILD_BUILD_VERSION="1"
     export LOCALVERSION="-g92c089fc2d37"
     export KBUILD_BUILD_USER="xiaomi-builder"
     export KBUILD_BUILD_HOST="xiaomi-build-server"
     export KBUILD_BUILD_TIMESTAMP="Wed Oct 29 11:41:46 UTC 2025"
-   
-    make $MAKE_ARGS -j$(nproc)
-
-    Image_Repack
-
-    echo "Build for AOSP finished."
-
-    # ------------- End of Building for AOSP -------------
+    
+    print_success "版本信息设置完成"
 }
 
+prepare_anykernel() {
+    print_step "准备AnyKernel3"
+    
+    if [ ! -d "anykernel" ]; then
+        git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel
+        print_success "AnyKernel3下载成功"
+    else
+        print_info "使用现有的AnyKernel3目录"
+    fi
+}
 
-Build_MIUI(){
-    # ------------- Building for MIUI -------------
+# --- KPM 补丁函数 ---
+patch_kpm() {
+    if ! $KSU_ENABLED; then
+        return 0
+    fi
+    
+    print_step "应用KPM补丁"
+    
+    local image_dir="$BUILD_DIR/arch/arm64/boot"
+    cd "$image_dir"
+    
+    # 下载并应用补丁
+    if curl -LSs "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux" -o patch; then
+        chmod +x patch
+        if ./patch; then
+            rm -f Image
+            mv oImage Image
+            print_success "KPM补丁应用成功"
+        else
+            print_warning "KPM补丁应用失败，使用原始镜像"
+        fi
+        rm -f patch
+    else
+        print_warning "无法下载KPM补丁，使用原始镜像"
+    fi
+    
+    cd "$SCRIPT_DIR"
+}
 
+# --- 统一的镜像打包函数 ---
+Image_Repack() {
+    local system_type=$1
+    
+    print_step "打包${system_type}镜像"
+    
+    # 检查内核镜像
+    local image_path="$BUILD_DIR/arch/arm64/boot/Image"
+    if [ ! -f "$image_path" ]; then
+        error_exit "未找到内核镜像 [$image_path]"
+    fi
+    print_success "找到内核镜像: $image_path"
 
-    echo "Clearning [out/] and build for MIUI....."
-    rm -rf out/
+    # KPM补丁
+    if $KSU_ENABLED; then
+        patch_kpm
+    fi
 
-    dts_source=arch/arm64/boot/dts/vendor/qcom
+    # 生成DTB
+    local dtb_path="$BUILD_DIR/arch/arm64/boot/dtb"
+    print_info "生成DTB文件: $dtb_path"
+    find "$BUILD_DIR/arch/arm64/boot/dts" -name '*.dtb' -exec cat {} + > "$dtb_path" 2>/dev/null || {
+        print_warning "未找到DTB文件，创建空文件"
+        touch "$dtb_path"
+    }
 
-    # Backup dts
-    cp -a ${dts_source} .dts.bak
+    # 准备AnyKernel3
+    if [ ! -d "anykernel" ]; then
+        print_info "下载AnyKernel3..."
+        if git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel; then
+            print_success "AnyKernel3下载成功"
+        else
+            error_exit "AnyKernel3下载失败"
+        fi
+    else
+        print_info "使用现有的AnyKernel3目录"
+    fi
 
-    # Correct panel dimensions on MIUI builds
+    # 清理并准备内核文件
+    rm -rf anykernel/kernels/
+    mkdir -p anykernel/kernels/
+
+    cp "$image_path" anykernel/kernels/
+    cp "$dtb_path" anykernel/kernels/
+
+    # 创建刷机包文件名
+    local ksu_str=$($KSU_ENABLED && echo "SukiSU" || echo "NoKernelSU")
+    local timestamp=$(date +'%Y%m%d_%H%M%S')
+    local zip_filename="Kernel_${system_type}_${TARGET_DEVICE}_${ksu_str}_${timestamp}_anykernel3_${GIT_COMMIT_ID}.zip"
+
+    # 创建刷机包
+    print_info "创建刷机包: $zip_filename"
+    cd anykernel
+    if zip -r9 "$zip_filename" ./* -x .git .gitignore out/ ./*.zip 2>/dev/null; then
+        mv "$zip_filename" ../
+        print_success "刷机包创建成功: $zip_filename"
+    else
+        error_exit "刷机包创建失败"
+    fi
+    cd ..
+
+    print_success "${system_type}镜像打包完成"
+}
+
+# --- 内核构建函数 ---
+build_kernel() {
+    local system_type=$1
+    
+    print_step "构建$system_type内核"
+    
+    # 清理构建目录
+    rm -rf "$BUILD_DIR"
+    mkdir -p "$BUILD_DIR"
+    
+    # 设置版本信息
+    setup_version_info
+    
+    # 基本make参数
+    local MAKE_ARGS=(
+        "O=$BUILD_DIR"
+        "ARCH=arm64" 
+        "SUBARCH=arm64"
+        "CC=clang"
+        "CROSS_COMPILE=aarch64-linux-gnu-"
+        "CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+        "CROSS_COMPILE_COMPAT=arm-linux-gnueabi-"
+        "CLANG_TRIPLE=aarch64-linux-gnu-"
+        "-j$(nproc)"
+    )
+    
+    # 配置defconfig
+    print_info "配置defconfig..."
+    make "${MAKE_ARGS[@]}" "${TARGET_DEVICE}_defconfig"
+    
+    # KernelSU配置
+    if $KSU_ENABLED; then
+        print_info "配置KernelSU..."
+        scripts/config --file "$BUILD_DIR/.config" \
+            -e KSU \
+            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+            -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_TRY_UMOUNT \
+            -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -e KPM
+    else
+        scripts/config --file "$BUILD_DIR/.config" -d KSU
+    fi
+    
+    # MIUI配置
+    if [ "$system_type" = "MIUI" ]; then
+        print_info "应用MIUI配置..."
+        scripts/config --file "$BUILD_DIR/.config" \
+            --set-str STATIC_USERMODEHELPER_PATH /system/bin/micd \
+            -e PERF_CRITICAL_RT_TASK \
+            -e SF_BINDER \
+            -e OVERLAY_FS \
+            -d DEBUG_FS \
+            -e MIGT \
+            -e MIGT_ENERGY_MODEL \
+            -e MIHW \
+            -e PACKAGE_RUNTIME_INFO \
+            -e BINDER_OPT \
+            -e KPERFEVENTS \
+            -e MILLET \
+            -e PERF_HUMANTASK \
+            -d LTO_CLANG \
+            -d LOCALVERSION_AUTO \
+            -e XIAOMI_MIUI \
+            -d MI_MEMORY_SYSFS \
+            -e TASK_DELAY_ACCT \
+            -e MIUI_ZRAM_MEMORY_TRACKING \
+            -d CONFIG_MODULE_SIG_SHA512 \
+            -d CONFIG_MODULE_SIG_HASH \
+            -e MI_FRAGMENTION \
+            -e PERF_HELPER \
+            -e BOOTUP_RECLAIM \
+            -e MI_RECLAIM \
+            -e RTMM
+    fi
+    
+    # 开始编译
+    local start_time=$(date +%s)
+    print_info "开始编译..."
+    make "${MAKE_ARGS[@]}"
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    
+    # 检查编译结果
+    if [ ! -f "$BUILD_DIR/arch/arm64/boot/Image" ]; then
+        error_exit "未找到内核镜像"
+    fi
+    
+    print_success "${system_type}内核编译完成，耗时: $((duration / 60))分$((duration % 60))秒"
+    
+    # 打包镜像
+    Image_Repack "$system_type"
+}
+
+modify_miui_dts() {
+    if [ "$1" != "MIUI" ]; then
+        return 0
+    fi
+    
+    print_step "修改MIUI设备树"
+    
+    local dts_source="arch/arm64/boot/dts/vendor/qcom"
+    if [ ! -d "$dts_source" ]; then
+        print_info "设备树目录不存在，跳过修改"
+        return 0
+    fi
+    
+    # 备份dts
+    cp -a "${dts_source}" .dts.bak
+    
+    # 面板尺寸修正
+    color_echo "$yellow" "修正面板尺寸..."
     sed -i 's/<154>/<1537>/g' ${dts_source}/dsi-panel-j1s*
     sed -i 's/<154>/<1537>/g' ${dts_source}/dsi-panel-j2*
     sed -i 's/<155>/<1544>/g' ${dts_source}/dsi-panel-j3s-37-02-0a-dsc-video.dtsi
@@ -200,20 +475,22 @@ Build_MIUI(){
     sed -i 's/<71>/<710>/g' ${dts_source}/dsi-panel-j1s*
     sed -i 's/<71>/<710>/g' ${dts_source}/dsi-panel-j2*
 
-    # Enable back mi smartfps while disabling qsync min refresh-rate
+    # 启用智能FPS
+    color_echo "$yellow" "启用智能FPS功能..."
     sed -i 's/\/\/ mi,mdss-dsi-pan-enable-smart-fps/mi,mdss-dsi-pan-enable-smart-fps/g' ${dts_source}/dsi-panel*
     sed -i 's/\/\/ mi,mdss-dsi-smart-fps-max_framerate/mi,mdss-dsi-smart-fps-max_framerate/g' ${dts_source}/dsi-panel*
     sed -i 's/\/\/ qcom,mdss-dsi-pan-enable-smart-fps/qcom,mdss-dsi-pan-enable-smart-fps/g' ${dts_source}/dsi-panel*
     sed -i 's/qcom,mdss-dsi-qsync-min-refresh-rate/\/\/qcom,mdss-dsi-qsync-min-refresh-rate/g' ${dts_source}/dsi-panel*
 
-    # Enable back refresh rates supported on MIUI
+    # 刷新率支持
+    color_echo "$yellow" "配置刷新率支持..."
     sed -i 's/120 90 60/120 90 60 50 30/g' ${dts_source}/dsi-panel-g7a-36-02-0c-dsc-video.dtsi
     sed -i 's/120 90 60/120 90 60 50 30/g' ${dts_source}/dsi-panel-g7a-37-02-0a-dsc-video.dtsi
     sed -i 's/120 90 60/120 90 60 50 30/g' ${dts_source}/dsi-panel-g7a-37-02-0b-dsc-video.dtsi
     sed -i 's/144 120 90 60/144 120 90 60 50 48 30/g' ${dts_source}/dsi-panel-j3s-37-02-0a-dsc-video.dtsi
 
-
-    # Enable back brightness control from dtsi
+    # 亮度控制
+    color_echo "$yellow" "配置亮度控制..."
     sed -i 's/\/\/39 00 00 00 00 00 03 51 03 FF/39 00 00 00 00 00 03 51 03 FF/g' ${dts_source}/dsi-panel-j9-38-0a-0a-fhd-video.dtsi
     sed -i 's/\/\/39 00 00 00 00 00 03 51 0D FF/39 00 00 00 00 00 03 51 0D FF/g' ${dts_source}/dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi
     sed -i 's/\/\/39 00 00 00 00 00 05 51 0F 8F 00 00/39 00 00 00 00 00 05 51 0F 8F 00 00/g' ${dts_source}/dsi-panel-j1s-42-02-0a-dsc-cmd.dtsi
@@ -239,186 +516,50 @@ Build_MIUI(){
     sed -i 's/\/\/39 01 00 00 01 00 03 51 03 FF/39 01 00 00 01 00 03 51 03 FF/g' ${dts_source}/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi
     sed -i 's/\/\/39 01 00 00 11 00 03 51 03 FF/39 01 00 00 11 00 03 51 03 FF/g' ${dts_source}/dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi
 
-    make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
-
-    SET_CONFIG MIUI
-    
-    export KBUILD_BUILD_VERSION="1"
-    export LOCALVERSION="-g92c089fc2d37"
-    export KBUILD_BUILD_USER="xiaomi-builder"
-    export KBUILD_BUILD_HOST="xiaomi-build-server"
-    export KBUILD_BUILD_TIMESTAMP="Wed Oct 29 11:41:46 UTC 2025"
-
-    make $MAKE_ARGS -j$(nproc)
-
-    Image_Repack MIUI
-    # ------------- End of Building for MIUI -------------
-
+    print_info "MIUI设备树修改完成"
 }
 
-SET_CONFIG(){
-    if [ "$1" == "MIUI" ]; then
-        scripts/config --file out/.config \
-            --set-str STATIC_USERMODEHELPER_PATH /system/bin/micd \
-            -e PERF_CRITICAL_RT_TASK	\
-            -e SF_BINDER		\
-            -e OVERLAY_FS		\
-            -d DEBUG_FS \
-            -e MIGT \
-            -e MIGT_ENERGY_MODEL \
-            -e MIHW \
-            -e PACKAGE_RUNTIME_INFO \
-            -e BINDER_OPT \
-            -e KPERFEVENTS \
-            -e MILLET \
-            -e PERF_HUMANTASK \
-            -d LTO_CLANG \
-            -d LOCALVERSION_AUTO \
-            -e SF_BINDER \
-            -e XIAOMI_MIUI \
-            -d MI_MEMORY_SYSFS \
-            -e TASK_DELAY_ACCT \
-            -e MIUI_ZRAM_MEMORY_TRACKING \
-            -d CONFIG_MODULE_SIG_SHA512 \
-            -d CONFIG_MODULE_SIG_HASH \
-            -e MI_FRAGMENTION \
-            -e PERF_HELPER \
-            -e BOOTUP_RECLAIM \
-            -e MI_RECLAIM \
-            -e RTMM
-    fi
-    
-    if [ "$KSU_ENABLE" -eq 1 ]; then
-        scripts/config --file out/.config -e KSU
-    else
-        scripts/config --file out/.config -d KSU
-    fi
-
-    # Enable the KSU_MANUAL_HOOK for sukisu-ultra
-    if [ "$KSU_VERSION" == "sukisu-ultra" ];then
-        scripts/config --file out/.config -e KSU
-    else
-        scripts/config --file out/.config -d KSU
-    fi
-
-    # Config KPM 
-    if [ "$KPM_ENABLE" -eq 1 ]; then
-        scripts/config --file out/.config \
-            -e KPM \
-            -e KALLSYMS \
-            -e KALLSYMS_ALL
-    else 
-        scripts/config --file out/.config \
-            -d KPM \
-            -d KALLSYMS \
-            -d KALLSYMS_ALL
-    fi
-
-    if [ "$SuSFS_ENABLE" -eq 1 ];then
-        scripts/config --file out/.config \
-            -e KSU \
-            -e KSU_SUSFS \
-            -e KSU_SUSFS_HAS_MAGIC_MOUNT \
-            -e KSU_SUSFS_SUS_PATH \
-            -e KSU_SUSFS_SUS_MOUNT \
-            -e KSU_SUSFS_SUS_MAP \
-            -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-            -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-            -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_TRY_UMOUNT \
-            -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
-            -e KSU_SUSFS_SPOOF_UNAME \
-            -e KSU_SUSFS_ENABLE_LOG \
-            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            -e KSU_SUSFS_OPEN_REDIRECT
-     else
-        scripts/config --file out/.config \
-            -d KSU_SUSFS \
-            -d KSU_SUSFS_HAS_MAGIC_MOUNT \
-            -d KSU_SUSFS_SUS_PATH \
-            -d KSU_SUSFS_SUS_MOUNT \
-            -d KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-            -d KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-            -d KSU_SUSFS_SUS_KSTAT \
-            -d KSU_SUSFS_TRY_UMOUNT \
-            -d KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
-            -d KSU_SUSFS_SPOOF_UNAME \
-            -d KSU_SUSFS_ENABLE_LOG \
-            -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            -d KSU_SUSFS_OPEN_REDIRECT
+restore_miui_dts() {
+    if [ -d ".dts.bak" ]; then
+        rm -rf "arch/arm64/boot/dts/vendor/qcom"
+        mv .dts.bak "arch/arm64/boot/dts/vendor/qcom"
+        print_info "设备树恢复完成"
     fi
 }
 
-Image_Repack(){
-    if [ -f "out/arch/arm64/boot/Image" ]; then
-        echo "The file [out/arch/arm64/boot/Image] exists. AOSP Build successfully."
-    else
-        echo "The file [out/arch/arm64/boot/Image] does not exist. Seems AOSP build failed."
-        exit 1
-    fi
-
-    # KPM Patch
-    if [[ "$KPM_ENABLE" -eq 1 && "$KSU_VERSION" == "sukisu-ultra" ]]; then
-        Patch_KPM
-    fi
-
-    echo "Generating [out/arch/arm64/boot/dtb]......"
-    find out/arch/arm64/boot/dts -name '*.dtb' -exec cat {} + >out/arch/arm64/boot/dtb
-
-    # Restore modified dts
-    if [ "$1" == "MIUI" ]; then
-        rm -rf ${dts_source}
-        mv .dts.bak ${dts_source}
-    fi
-
-    rm -rf anykernel/kernels/
-
-    mkdir -p anykernel/kernels/
-
-    cp out/arch/arm64/boot/Image anykernel/kernels/
-    cp out/arch/arm64/boot/dtb anykernel/kernels/
-
-    cd anykernel 
-
-    if [ "$1" == "MIUI" ]; then
-        ZIP_FILENAME=Kernel_MIUI_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
-    else
-        ZIP_FILENAME=Kernel_AOSP_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
-    fi
-
-    zip -r9 $ZIP_FILENAME ./* -x .git .gitignore out/ ./*.zip
-
-    mv $ZIP_FILENAME ../
-
-    cd ..
-}
-
-Patch_KPM(){
-    cd out/arch/arm64/boot
-    curl -LSs "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux" -o patch
-    chmod +x patch
-    ./patch
-    if [ $? -eq 0 ]; then
-        rm -f Image
-        mv oImage Image
-        echo "Image file repair complete"
-    else
-        echo "KPM Patch Failed, Use Original Image"
+# --- 主执行流程 ---
+main() {
+    print_step "开始内核构建流程"
+    local start_time=$(date +%s)
+    
+    # 设置KernelSU
+    setup_kernelsu
+    
+    # 准备AnyKernel3
+    prepare_anykernel
+    
+    # 构建AOSP内核
+    if $BUILD_AOSP; then
+        build_kernel "AOSP"
     fi
     
-    cd $KERNEL_SRC
-
+    # 构建MIUI内核
+    if $BUILD_MIUI; then
+        modify_miui_dts "MIUI"
+        build_kernel "MIUI"
+        restore_miui_dts
+    fi
+    
+    local end_time=$(date +%s)
+    local total_duration=$((end_time - start_time))
+    
+    print_step "构建完成"
+    print_success "内核构建全部完成! 总耗时: $((total_duration / 60))分$((total_duration % 60))秒"
+    
+    # 显示生成的刷机包
+    print_info "生成的刷机包:"
+    ls -la *.zip 2>/dev/null || print_info "未找到刷机包文件"
 }
 
-if [ "$TARGET_SYSTEM" == "aosp" ];then
-    Build_AOSP
-elif [ "$TARGET_SYSTEM" == "miui" ];then
-    Build_MIUI
-else
-    Build_AOSP
-    Build_MIUI
-fi
-    
-echo "Done. The flashable zip is: [./$ZIP_FILENAME]"
+# 执行主函数
+main "$@"
