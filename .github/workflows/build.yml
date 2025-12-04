@@ -1,0 +1,139 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: '选择设备代号'
+        required: true
+        default: 'alioth'
+        type: choice
+        options:
+          - psyche
+          - umi
+          - munch
+          - lmi
+          - cmi
+          - cas
+          - apollo
+          - alioth
+          - elish
+          - enuma
+          - dagu
+          - pipa
+      build_type:
+        description: '选择构建类型'
+        required: true
+        default: 'miui'
+        type: choice
+        options:
+          - 'aosp'
+          - 'miui'
+          - 'all'
+      include_ksu:
+        description: '是否包含KSU'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3 tar
+
+    # 生成短哈希
+    - name: Set short commit SHA
+      run: echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_ENV
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ccache_mikernel
+        key: ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.include_ksu }}-${{ env.SHORT_SHA }}
+        restore-keys: |
+          ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.include_ksu }}-
+          ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}-
+          ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-
+          ${{ runner.os }}-ccache-
+
+    - name: Setup zyc-clang toolchain
+      run: |
+        mkdir -p $HOME/zyc-clang
+        cd $HOME/zyc-clang
+        wget https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
+        tar -zxvf Clang-15.0.7-20251111.tar.gz
+        cd $GITHUB_WORKSPACE
+
+    - name: Build kernel
+      run: |
+        # 设置环境变量
+        export TOOLCHAIN_PATH="$HOME/zyc-clang"
+        
+        # 构建命令参数
+        BUILD_CMD="./build.sh ${{ github.event.inputs.device }}"
+        
+        # 添加KSU参数
+        if [ "${{ github.event.inputs.include_ksu }}" = "true" ]; then
+          BUILD_CMD="$BUILD_CMD ksu"
+        fi
+        
+        # 添加构建类型参数
+        if [ "${{ github.event.inputs.build_type }}" = "aosp" ]; then
+          BUILD_CMD="$BUILD_CMD --aosp"
+        elif [ "${{ github.event.inputs.build_type }}" = "miui" ]; then
+          BUILD_CMD="$BUILD_CMD --miui"
+        fi
+        # 如果是all，不添加参数（脚本默认构建两者）
+        
+        # 显示构建命令
+        echo "构建命令: $BUILD_CMD"
+        echo "工作目录: $(pwd)"
+        echo "文件列表:"
+        ls -la
+        
+        # 检查脚本是否存在
+        if [ ! -f "./build.sh" ]; then
+          echo "错误: build.sh 文件不存在"
+          ls -la
+          exit 1
+        fi
+        
+        # 给脚本执行权限
+        chmod +x ./build.sh
+        
+        # 执行构建
+        $BUILD_CMD
+
+    - name: Show ccache stats
+      run: ccache -s
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}${{ github.event.inputs.include_ksu == 'true' && '-ksu' || '' }}-kernel
+        path: |
+          *.zip
+          build_*/arch/arm64/boot/Image
+          build_*/arch/arm64/boot/dtb
+
+    - name: Upload build logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event.inputs.device }}-build-logs
+        path: |
+          build_*/
+          anykernel/
