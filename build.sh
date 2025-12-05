@@ -205,7 +205,7 @@ setup_kernelsu() {
     
     print_step
     
-    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/miuix/kernel/setup.sh" | bash -s miuix; then
+    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/dev/kernel/setup.sh" | bash -s dev; then
         print_success "SukiSU 设置完成"
     else
         error_exit "SukiSU 设置失败"
