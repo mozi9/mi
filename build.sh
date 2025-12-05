@@ -203,9 +203,9 @@ setup_kernelsu() {
         return 0
     fi
     
-    print_step "设置 SukiSU (susfs-main 分支)"
+    print_step
     
-    if curl -LSs "https://raw.githubusercontent.com/mozi9/SukiSU-Ultra/susfs-main/kernel/setup.sh" | bash -s susfs-main; then
+    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/dev/kernel/setup.sh" | bash -s 🤺💨退‼️; then
         print_success "SukiSU 设置完成"
     else
         error_exit "SukiSU 设置失败"
