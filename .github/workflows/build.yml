@@ -53,30 +53,16 @@ jobs:
     - name: Clean previous build artifacts
       run: |
         echo "🧹 清理之前的构建产物..."
-        # 只清理构建产物，不删除源代码
-        sudo rm -rf out/ anykernel/ *.zip .dts.bak/ 2>/dev/null || true
-        # 清理内核编译临时文件
-        sudo find . -name "*.o" -delete 2>/dev/null || true
-        sudo find . -name "*.cmd" -delete 2>/dev/null || true
-        sudo find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
-        sudo find . -name ".*.cmd" -delete 2>/dev/null || true
-        sudo find . -name "*.mod" -delete 2>/dev/null || true
-        sudo find . -name "*.mod.c" -delete 2>/dev/null || true
-        sudo find . -name "*.order" -delete 2>/dev/null || true
-        sudo find . -name "*.ko" -delete 2>/dev/null || true
-        sudo find . -name "modules.builtin" -delete 2>/dev/null || true
-        sudo find . -name "Module.symvers" -delete 2>/dev/null || true
-        
-        echo "📁 清理后目录状态:"
-        ls -la
-        echo ""
+        rm -rf out/ anykernel/ *.zip .dts.bak/ 2>/dev/null || true
+        find . -name "*.o" -delete 2>/dev/null || true
+        find . -name "*.cmd" -delete 2>/dev/null || true
+        find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
 
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3 tar file
 
-    # 生成短哈希
     - name: Set short commit SHA
       run: echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_ENV
 
@@ -99,197 +85,266 @@ jobs:
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
         tar -zxf Clang-15.0.7-20251111.tar.gz
         cd $GITHUB_WORKSPACE
-        echo "✅ 工具链设置完成"
 
-    - name: Verify environment
+    - name: Pre-check common conflict files
       run: |
-        echo "🔍 验证构建环境..."
+        echo "🔍 预检查29个常见冲突文件..."
         
-        # 检查必要文件
-        echo "📁 检查必要文件..."
-        if [ ! -f "./build.sh" ]; then
-          echo "❌ 错误: build.sh 文件不存在"
-          echo "💡 请确保仓库包含构建脚本"
-          echo "📋 当前目录内容:"
-          ls -la
-          exit 1
+        # 定义常见冲突文件列表
+        CONFLICT_FILES=(
+          "drivers/Makefile"
+          "drivers/input/input.c"
+          "drivers/tty/pty.c"
+          "fs/Makefile"
+          "fs/dcache.c"
+          "fs/exec.c"
+          "fs/namei.c"
+          "fs/namespace.c"
+          "fs/notify/fdinfo.c"
+          "fs/open.c"
+          "fs/overlayfs/inode.c"
+          "fs/overlayfs/readdir.c"
+          "fs/overlayfs/super.c"
+          "fs/proc/cmdline.c"
+          "fs/proc/fd.c"
+          "fs/proc/task_mmu.c"
+          "fs/proc_namespace.c"
+          "fs/read_write.c"
+          "fs/readdir.c"
+          "fs/stat.c"
+          "fs/statfs.c"
+          "fs/susfs.c"
+          "include/linux/mount.h"
+          "include/linux/sched.h"
+          "include/linux/susfs.h"
+          "include/linux/susfs_def.h"
+          "kernel/kallsyms.c"
+          "kernel/sys.c"
+          "security/selinux/avc.c"
+        )
+        
+        echo "📋 检查文件存在性和冲突标记..."
+        
+        for file in "${CONFLICT_FILES[@]}"; do
+          if [ -f "$file" ]; then
+            echo -n "✅ $file - 存在"
+            
+            # 检查常见的冲突标记
+            if grep -q "<<<<<<<" "$file" || grep -q ">>>>>>>" "$file"; then
+              echo " ❌ 发现Git冲突标记!"
+              echo "   冲突位置:"
+              grep -n "<<<<<<<" "$file" | head -3
+            elif grep -q "CONFIG_" "$file" && grep -q "#ifdef" "$file"; then
+              echo " ⚠️ 可能包含配置冲突"
+            else
+              echo " ✅ 无冲突标记"
+            fi
+            
+            # 检查文件大小和修改时间
+            file_info=$(ls -la "$file" | awk '{print $5, $6, $7, $8}')
+            echo "   信息: $file_info"
+            
+          else
+            echo "❌ $file - 文件不存在"
+          fi
+        done
+        
+        echo ""
+        echo "🔧 检查KernelSU集成..."
+        if [ "${{ github.event.inputs.include_ksu }}" = "true" ]; then
+          if [ -d "drivers/kernelsu" ] || [ -d "KernelSU" ]; then
+            echo "✅ KernelSU目录存在"
+            # 检查KSU相关的修改
+            if grep -r "kernelsu" drivers/Makefile 2>/dev/null || grep -r "kernelsu" fs/Makefile 2>/dev/null; then
+              echo "✅ KernelSU已集成到Makefile"
+            else
+              echo "⚠️ KernelSU可能未正确集成到Makefile"
+            fi
+          else
+            echo "❌ KernelSU目录不存在"
+          fi
         fi
-        
-        if [ ! -d "arch/arm64/configs" ]; then
-          echo "❌ 错误: 内核配置目录不存在"
-          echo "💡 请检查仓库结构是否正确"
-          echo "📋 当前目录结构:"
-          find . -maxdepth 2 -type d | sort
-          exit 1
-        fi
-        
-        # 检查设备配置
-        CONFIG_FILE="arch/arm64/configs/${{ github.event.inputs.device }}_defconfig"
-        if [ ! -f "$CONFIG_FILE" ]; then
-          echo "❌ 错误: 设备 [${{ github.event.inputs.device }}] 的配置文件不存在: $CONFIG_FILE"
-          echo "📋 可用设备配置:"
-          ls -la arch/arm64/configs/*_defconfig 2>/dev/null | sed 's|.*/||; s|_defconfig||' || echo "   无可用配置"
-          exit 1
-        fi
-        
-        echo "✅ 环境验证通过"
 
-    - name: Build kernel
+    - name: Build kernel with detailed conflict detection
       run: |
-        set -e  # 遇到错误立即退出
+        set -e
         
         echo "🚀 开始构建内核..."
-        echo "📋 构建配置:"
-        echo "   设备: ${{ github.event.inputs.device }}"
-        echo "   类型: ${{ github.event.inputs.build_type }}"
-        echo "   KSU: ${{ github.event.inputs.include_ksu }}"
         
         # 设置环境变量
         export TOOLCHAIN_PATH="$HOME/zyc-clang"
         export PATH="$HOME/zyc-clang/bin:$PATH"
         
-        # 验证工具链
-        echo "🔧 验证工具链..."
-        if ! command -v clang >/dev/null 2>&1; then
-          echo "❌ 错误: clang 工具链未正确设置"
-          echo "💡 请检查 TOOLCHAIN_PATH: $TOOLCHAIN_PATH"
-          echo "📋 工具链目录内容:"
-          ls -la $TOOLCHAIN_PATH/bin/ 2>/dev/null || echo "工具链目录为空"
-          exit 1
-        fi
-        
-        # 显示工具链版本
-        echo "📋 工具链信息:"
-        clang --version | head -1 || echo "无法获取clang版本"
-        
         # 构建命令参数
         BUILD_ARGS="${{ github.event.inputs.device }}"
-        
-        # 添加KSU参数
-        if [ "${{ github.event.inputs.include_ksu }}" = "true" ]; then
-          BUILD_ARGS="$BUILD_ARGS ksu"
-        fi
-        
-        # 添加构建类型参数
-        if [ "${{ github.event.inputs.build_type }}" = "aosp" ]; then
-          BUILD_ARGS="$BUILD_ARGS --aosp"
-        elif [ "${{ github.event.inputs.build_type }}" = "miui" ]; then
-          BUILD_ARGS="$BUILD_ARGS --miui"
-        elif [ "${{ github.event.inputs.build_type }}" = "all" ]; then
-          BUILD_ARGS="$BUILD_ARGS --aosp --miui"
-        fi
+        [ "${{ github.event.inputs.include_ksu }}" = "true" ] && BUILD_ARGS="$BUILD_ARGS ksu"
+        [ "${{ github.event.inputs.build_type }}" = "aosp" ] && BUILD_ARGS="$BUILD_ARGS --aosp"
+        [ "${{ github.event.inputs.build_type }}" = "miui" ] && BUILD_ARGS="$BUILD_ARGS --miui"
+        [ "${{ github.event.inputs.build_type }}" = "all" ] && BUILD_ARGS="$BUILD_ARGS --aosp --miui"
         
         chmod +x ./build.sh
         
-        # 执行构建
-        echo "🔨 执行构建命令: ./build.sh $BUILD_ARGS"
-        if ./build.sh $BUILD_ARGS; then
-          echo "✅ 构建成功完成"
-        else
-          BUILD_EXIT_CODE=$?
-          echo "❌ 构建失败，退出代码: $BUILD_EXIT_CODE"
-          echo "🔍 详细错误分析:"
+        # 执行构建并捕获输出
+        if ! ./build.sh $BUILD_ARGS 2>&1 | tee build_output.log; then
+          echo "❌ 构建失败，分析29个常见文件的冲突..."
           
-          # 根据退出代码提供具体错误信息
-          case $BUILD_EXIT_CODE in
-            1)
-              echo "💡 错误类型: 参数或配置错误"
-              echo "   可能原因:"
-              echo "   - 设备 [${{ github.event.inputs.device }}] 配置不存在"
-              echo "   - 构建参数不匹配"
-              echo "   - 环境变量设置错误"
-              ;;
-            2)
-              echo "💡 错误类型: 编译错误"
-              echo "   可能原因:"
-              echo "   - 代码冲突或语法错误"
-              echo "   - 头文件缺失"
-              echo "   - 工具链不兼容"
-              ;;
-            127)
-              echo "💡 错误类型: 命令未找到"
-              echo "   可能原因: build.sh 脚本不存在或没有执行权限"
-              ;;
-            *)
-              echo "💡 错误类型: 未知错误 (退出代码: $BUILD_EXIT_CODE)"
-              echo "   可能原因: 内存不足、磁盘空间不足或其他系统错误"
-              ;;
-          esac
+          # 定义常见冲突文件
+          CONFLICT_FILES=(
+            "drivers/Makefile" "drivers/input/input.c" "drivers/tty/pty.c"
+            "fs/Makefile" "fs/dcache.c" "fs/exec.c" "fs/namei.c" "fs/namespace.c"
+            "fs/notify/fdinfo.c" "fs/open.c" "fs/overlayfs/inode.c" "fs/overlayfs/readdir.c"
+            "fs/overlayfs/super.c" "fs/proc/cmdline.c" "fs/proc/fd.c" "fs/proc/task_mmu.c"
+            "fs/proc_namespace.c" "fs/read_write.c" "fs/readdir.c" "fs/stat.c"
+            "fs/statfs.c" "fs/susfs.c" "include/linux/mount.h" "include/linux/sched.h"
+            "include/linux/susfs.h" "include/linux/susfs_def.h" "kernel/kallsyms.c"
+            "kernel/sys.c" "security/selinux/avc.c"
+          )
           
-          # 检查构建状态
-          echo "📁 检查构建状态:"
-          if [ -d "out" ]; then
-            echo "   ✅ out/ 目录存在"
-            if [ -f "out/arch/arm64/boot/Image" ]; then
-              echo "   ✅ 内核镜像已生成"
-              echo "   📏 镜像大小: $(ls -lh out/arch/arm64/boot/Image | awk '{print $5}')"
-            else
-              echo "   ❌ 内核镜像未生成"
-              echo "   📋 out/arch/arm64/boot/ 目录内容:"
-              ls -la out/arch/arm64/boot/ 2>/dev/null || echo "   目录不存在"
+          # 分析每个文件的错误
+          for file in "${CONFLICT_FILES[@]}"; do
+            if grep -q "$file" build_output.log; then
+              echo ""
+              echo "🔍 文件 $file 发现错误:"
+              
+              # 提取该文件相关的错误信息
+              grep -A 3 -B 3 "$file" build_output.log | head -10
+              
+              # 检查文件中的具体问题
+              if [ -f "$file" ]; then
+                echo "📄 文件内容检查:"
+                
+                # 检查Git冲突标记
+                if grep -q "<<<<<<<" "$file"; then
+                  echo "❌ 发现Git冲突标记:"
+                  grep -n "<<<<<<<" "$file" | head -2
+                fi
+                
+                # 检查语法错误
+                if echo "$file" | grep -q "\.c$"; then
+                  echo "🔧 尝试语法检查:"
+                  gcc -fsyntax-only -Iinclude -Iarch/arm64/include "$file" 2>&1 | head -5 || true
+                fi
+                
+                # 检查头文件包含
+                if grep -q "#include" "$file"; then
+                  missing_includes=$(grep "#include" "$file" | while read inc; do
+                    header=$(echo "$inc" | sed 's/.*#include *[<"]\([^>"]*\)[>"].*/\1/')
+                    if [ ! -f "include/$header" ] && [ ! -f "arch/arm64/include/$header" ]; then
+                      echo "可能缺失: $header"
+                    fi
+                  done)
+                  if [ -n "$missing_includes" ]; then
+                    echo "⚠️ 头文件问题:"
+                    echo "$missing_includes" | head -3
+                  fi
+                fi
+              fi
             fi
-          else
-            echo "   ❌ out/ 目录不存在，编译可能未开始"
+          done
+          
+          # 检查常见的错误模式
+          echo ""
+          echo "🔧 常见错误模式分析:"
+          
+          # 1. 函数重复定义
+          if grep -q "redefinition of" build_output.log; then
+            echo "❌ 函数重复定义:"
+            grep "redefinition of" build_output.log | head -3
           fi
           
-          # 检查配置状态
-          echo "🔧 检查配置状态:"
-          if [ -f "out/.config" ]; then
-            echo "   ✅ 配置已生成"
-            # 检查关键配置
-            if ${{ github.event.inputs.include_ksu == 'true' }} && grep -q "CONFIG_KSU=y" out/.config 2>/dev/null; then
-              echo "   ✅ KSU配置已启用"
-            elif ${{ github.event.inputs.include_ksu == 'true' }}; then
-              echo "   ❌ KSU配置未启用"
-            fi
-          else
-            echo "   ❌ 配置未生成，defconfig可能有问题"
+          # 2. 未定义的引用
+          if grep -q "undefined reference to" build_output.log; then
+            echo "❌ 未定义的引用:"
+            grep "undefined reference to" build_output.log | head -3
           fi
           
-          exit $BUILD_EXIT_CODE
+          # 3. 类型冲突
+          if grep -q "conflicting types for" build_output.log; then
+            echo "❌ 类型冲突:"
+            grep -A 2 -B 2 "conflicting types for" build_output.log | head -5
+          fi
+          
+          # 4. Makefile错误
+          if grep -q "Makefile:" build_output.log; then
+            echo "❌ Makefile错误:"
+            grep -A 2 "Makefile:" build_output.log | head -5
+          fi
+          
+          # 5. 缺少声明
+          if grep -q "implicit declaration" build_output.log; then
+            echo "❌ 隐式声明警告:"
+            grep "implicit declaration" build_output.log | head -3
+          fi
+          
+          # 显示具体的错误文件和行号
+          echo ""
+          echo "📍 错误精确定位:"
+          grep -E "error:|warning:" build_output.log | head -10 | while read error_line; do
+            if echo "$error_line" | grep -q ":[0-9]*:[0-9]*:"; then
+              file_path=$(echo "$error_line" | cut -d: -f1)
+              line_num=$(echo "$error_line" | cut -d: -f2)
+              error_msg=$(echo "$error_line" | cut -d: -f4-)
+              
+              # 检查是否是29个常见文件之一
+              for conflict_file in "${CONFLICT_FILES[@]}"; do
+                if [ "$file_path" = "$conflict_file" ]; then
+                  echo "🎯 重点文件: $file_path:$line_num"
+                  echo "   💬 $error_msg"
+                  
+                  # 显示错误上下文
+                  if [ -f "$file_path" ] && [ -n "$line_num" ]; then
+                    echo "   📝 代码上下文:"
+                    sed -n "$((line_num-2)),$((line_num+2))p" "$file_path" 2>/dev/null | while read code; do
+                      echo "      $code"
+                    done
+                  fi
+                  break
+                fi
+              done
+            fi
+          done
+          
+          echo ""
+          echo "💡 解决建议:"
+          echo "1. 检查上述29个文件中的Git冲突标记 (<<<<<<<, >>>>>>>)"
+          echo "2. 验证函数声明和定义是否一致"
+          echo "3. 检查头文件包含是否正确"
+          echo "4. 确认KernelSU集成是否完整"
+          echo "5. 查看具体的错误文件和行号进行修复"
+          
+          exit 1
         fi
+        
+        echo "✅ 构建成功"
 
-    - name: Clean build artifacts after success
+    - name: Check build artifacts
       if: success()
       run: |
-        echo "🧹 构建成功，清理中间文件..."
-        # 保留刷机包，清理其他中间文件
-        sudo rm -rf out/ anykernel/ .dts.bak/ 2>/dev/null || true
-        sudo find . -name "*.o" -delete 2>/dev/null || true
-        sudo find . -name "*.cmd" -delete 2>/dev/null || true
-        sudo find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
-        
-        echo "📁 最终产物:"
-        ls -la *.zip 2>/dev/null && echo "✅ 刷机包已生成" || echo "❌ 未找到刷机包"
-
-    - name: Clean build artifacts on failure
-      if: failure()
-      run: |
-        echo "🧹 构建失败，保留调试文件..."
-        # 失败时保留out目录用于调试
-        echo "📁 保留调试文件用于分析"
-        if [ -d "out" ]; then
-          echo "📏 out目录大小: $(du -sh out | cut -f1)"
+        echo "📦 检查构建产物..."
+        if ls *.zip 1> /dev/null 2>&1; then
+          echo "✅ 找到刷机包:"
+          ls -lh *.zip
+        else
+          echo "❌ 未找到刷机包"
+          exit 1
         fi
 
-    - name: Show ccache stats
-      run: ccache -s
+    - name: Clean build artifacts
+      if: always()
+      run: |
+        echo "🧹 清理构建文件..."
+        rm -rf build_output.log 2>/dev/null || true
+        if [ "${{ success() }}" = "true" ]; then
+          rm -rf out/ anykernel/ .dts.bak/ 2>/dev/null || true
+          find . -name "*.o" -delete 2>/dev/null || true
+          find . -name "*.cmd" -delete 2>/dev/null || true
+        fi
 
     - name: Upload build artifacts
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: ${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}${{ github.event.inputs.include_ksu == 'true' && '-ksu' || '' }}-kernel
         path: |
           *.zip
         retention-days: 7
-
-    - name: Upload error logs on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ github.event.inputs.device }}-error-debug
-        path: |
-          out/
-          arch/arm64/configs/${{ github.event.inputs.device }}_defconfig
-        retention-days: 3
-      continue-on-error: true
