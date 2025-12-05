@@ -45,15 +45,31 @@ jobs:
     timeout-minutes: 120
 
     steps:
+    - name: Clean workspace before checkout
+      run: |
+        echo "🧹 清理工作空间..."
+        # 清理可能存在的残留文件
+        sudo rm -rf $GITHUB_WORKSPACE/* $GITHUB_WORKSPACE/.* 2>/dev/null || true
+
     - name: Checkout source
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
 
+    - name: Clean build environment
+      run: |
+        echo "🧹 清理构建环境..."
+        # 清理可能存在的构建产物
+        sudo rm -rf out/ anykernel/ *.zip .dts.bak/ 2>/dev/null || true
+        # 清理临时文件
+        sudo find . -name "*.o" -delete 2>/dev/null || true
+        sudo find . -name "*.cmd" -delete 2>/dev/null || true
+        sudo find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
+
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3 tar
+        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3 tar file
 
     # 生成短哈希
     - name: Set short commit SHA
@@ -72,58 +88,148 @@ jobs:
 
     - name: Setup zyc-clang toolchain
       run: |
+        echo "🔧 设置工具链..."
         mkdir -p $HOME/zyc-clang
         cd $HOME/zyc-clang
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
         tar -zxf Clang-15.0.7-20251111.tar.gz
         cd $GITHUB_WORKSPACE
+        echo "✅ 工具链设置完成"
+
+    - name: Verify environment
+      run: |
+        echo "🔍 验证构建环境..."
+        
+        # 检查必要文件
+        echo "📁 检查必要文件..."
+        if [ ! -f "./build.sh" ]; then
+          echo "❌ 错误: build.sh 文件不存在"
+          echo "💡 请确保仓库包含构建脚本"
+          exit 1
+        fi
+        
+        if [ ! -d "arch/arm64/configs" ]; then
+          echo "❌ 错误: 内核配置目录不存在"
+          echo "💡 请检查仓库结构是否正确"
+          exit 1
+        fi
+        
+        # 检查设备配置
+        CONFIG_FILE="arch/arm64/configs/${{ github.event.inputs.device }}_defconfig"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "❌ 错误: 设备 [${{ github.event.inputs.device }}] 的配置文件不存在: $CONFIG_FILE"
+          echo "📋 可用设备配置:"
+          ls -la arch/arm64/configs/*_defconfig 2>/dev/null | sed 's|.*/||; s|_defconfig||' || echo "   无可用配置"
+          exit 1
+        fi
+        
+        echo "✅ 环境验证通过"
 
     - name: Build kernel
       run: |
+        set -e  # 遇到错误立即退出
+        
+        echo "🚀 开始构建内核..."
+        echo "📋 构建配置:"
+        echo "   设备: ${{ github.event.inputs.device }}"
+        echo "   类型: ${{ github.event.inputs.build_type }}"
+        echo "   KSU: ${{ github.event.inputs.include_ksu }}"
+        
         # 设置环境变量
         export TOOLCHAIN_PATH="$HOME/zyc-clang"
         export PATH="$HOME/zyc-clang/bin:$PATH"
         
+        # 验证工具链
+        echo "🔧 验证工具链..."
+        if ! command -v clang >/dev/null 2>&1; then
+          echo "❌ 错误: clang 工具链未正确设置"
+          echo "💡 请检查 TOOLCHAIN_PATH: $TOOLCHAIN_PATH"
+          ls -la $TOOLCHAIN_PATH/bin/ 2>/dev/null || echo "工具链目录为空"
+          exit 1
+        fi
+        
+        # 显示工具链版本
+        echo "📋 工具链信息:"
+        clang --version | head -1 || echo "无法获取clang版本"
+        
         # 构建命令参数
-        BUILD_CMD="./build.sh ${{ github.event.inputs.device }}"
+        BUILD_ARGS="${{ github.event.inputs.device }}"
         
         # 添加KSU参数
         if [ "${{ github.event.inputs.include_ksu }}" = "true" ]; then
-          BUILD_CMD="$BUILD_CMD ksu"
+          BUILD_ARGS="$BUILD_ARGS ksu"
         fi
         
         # 添加构建类型参数
         if [ "${{ github.event.inputs.build_type }}" = "aosp" ]; then
-          BUILD_CMD="$BUILD_CMD --aosp"
+          BUILD_ARGS="$BUILD_ARGS --aosp"
         elif [ "${{ github.event.inputs.build_type }}" = "miui" ]; then
-          BUILD_CMD="$BUILD_CMD --miui"
-        fi
-        
-        echo "构建配置:"
-        echo "设备: ${{ github.event.inputs.device }}"
-        echo "类型: ${{ github.event.inputs.build_type }}"
-        echo "KSU: ${{ github.event.inputs.include_ksu }}"
-        echo "命令: $BUILD_CMD"
-        
-        # 检查必要文件
-        if [ ! -f "./build.sh" ]; then
-          echo "❌ 错误: build.sh 文件不存在"
-          exit 1
+          BUILD_ARGS="$BUILD_ARGS --miui"
         fi
         
         chmod +x ./build.sh
         
-        # 执行构建并捕获详细错误信息
-        echo "🚀 开始构建内核..."
-        set -e  # 遇到错误立即退出
-        $BUILD_CMD || {
-          echo "❌ 构建失败！错误代码: $?"
-          echo "📋 检查以下可能的问题:"
-          echo "   - 设备配置是否正确"
-          echo "   - 依赖是否完整安装"
-          echo "   - 工具链是否设置正确"
-          exit 1
-        }
+        # 执行构建
+        echo "🔨 执行构建命令: ./build.sh $BUILD_ARGS"
+        if ./build.sh $BUILD_ARGS; then
+          echo "✅ 构建成功完成"
+        else
+          BUILD_EXIT_CODE=$?
+          echo "❌ 构建失败，退出代码: $BUILD_EXIT_CODE"
+          echo "🔍 详细错误分析:"
+          
+          # 检查常见错误
+          if [ $BUILD_EXIT_CODE -eq 1 ]; then
+            echo "💡 错误类型: 参数或配置错误"
+            echo "   可能原因: 设备配置错误、参数不匹配"
+          elif [ $BUILD_EXIT_CODE -eq 2 ]; then
+            echo "💡 错误类型: 编译错误"
+            echo "   可能原因: 代码冲突、依赖缺失"
+          else
+            echo "💡 错误类型: 未知错误"
+          fi
+          
+          # 检查构建产物
+          echo "📁 检查构建状态:"
+          if [ -d "out" ]; then
+            echo "   out/ 目录存在"
+            if [ -f "out/arch/arm64/boot/Image" ]; then
+              echo "   ✅ 内核镜像已生成"
+            else
+              echo "   ❌ 内核镜像未生成"
+            fi
+          else
+            echo "   ❌ out/ 目录不存在，编译未开始"
+          fi
+          
+          # 检查配置问题
+          echo "🔧 检查配置状态:"
+          if [ -f "out/.config" ]; then
+            echo "   ✅ 配置已生成"
+            # 检查关键配置
+            if grep -q "CONFIG_KSU" out/.config 2>/dev/null; then
+              echo "   ℹ️  KSU配置存在"
+            fi
+          else
+            echo "   ❌ 配置未生成，defconfig可能有问题"
+          fi
+          
+          exit $BUILD_EXIT_CODE
+        fi
+
+    - name: Clean build artifacts
+      if: always()
+      run: |
+        echo "🧹 清理构建产物..."
+        # 保留刷机包，清理其他文件
+        sudo rm -rf out/ anykernel/ .dts.bak/ 2>/dev/null || true
+        sudo find . -name "*.o" -delete 2>/dev/null || true
+        sudo find . -name "*.cmd" -delete 2>/dev/null || true
+        sudo find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
+        
+        echo "📁 剩余产物:"
+        ls -la *.zip 2>/dev/null || echo "   无刷机包文件"
+        du -sh . || true
 
     - name: Show ccache stats
       run: ccache -s
@@ -136,12 +242,37 @@ jobs:
           *.zip
         retention-days: 7
 
-    - name: Upload build logs (仅失败时)
+    - name: Debug info on failure
+      if: failure()
+      run: |
+        echo "🔍 构建失败调试信息:"
+        echo "📋 工作目录内容:"
+        ls -la
+        echo ""
+        echo "📋 内核配置状态:"
+        if [ -f "arch/arm64/configs/${{ github.event.inputs.device }}_defconfig" ]; then
+          echo "✅ 设备配置存在"
+        else
+          echo "❌ 设备配置不存在"
+        fi
+        echo ""
+        echo "📋 工具链状态:"
+        which clang && clang --version | head -1 || echo "clang不可用"
+        echo ""
+        echo "📋 构建目录状态:"
+        if [ -d "out" ]; then
+          find out -name "*.o" | head -5 | xargs file 2>/dev/null || true
+        else
+          echo "out目录不存在"
+        fi
+
+    - name: Upload error logs
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ github.event.inputs.device }}-build-logs
+        name: ${{ github.event.inputs.device }}-error-debug
         path: |
-          out/
-          anykernel/
+          out/.config
+          arch/arm64/configs/${{ github.event.inputs.device }}_defconfig
         retention-days: 3
+      continue-on-error: true  # 即使上传失败也不停止工作流
