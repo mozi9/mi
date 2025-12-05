@@ -45,26 +45,31 @@ jobs:
     timeout-minutes: 120
 
     steps:
-    - name: Clean workspace before checkout
-      run: |
-        echo "🧹 清理工作空间..."
-        # 清理可能存在的残留文件
-        sudo rm -rf $GITHUB_WORKSPACE/* $GITHUB_WORKSPACE/.* 2>/dev/null || true
-
     - name: Checkout source
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
 
-    - name: Clean build environment
+    - name: Clean previous build artifacts
       run: |
-        echo "🧹 清理构建环境..."
-        # 清理可能存在的构建产物
+        echo "🧹 清理之前的构建产物..."
+        # 只清理构建产物，不删除源代码
         sudo rm -rf out/ anykernel/ *.zip .dts.bak/ 2>/dev/null || true
-        # 清理临时文件
+        # 清理内核编译临时文件
         sudo find . -name "*.o" -delete 2>/dev/null || true
         sudo find . -name "*.cmd" -delete 2>/dev/null || true
         sudo find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
+        sudo find . -name ".*.cmd" -delete 2>/dev/null || true
+        sudo find . -name "*.mod" -delete 2>/dev/null || true
+        sudo find . -name "*.mod.c" -delete 2>/dev/null || true
+        sudo find . -name "*.order" -delete 2>/dev/null || true
+        sudo find . -name "*.ko" -delete 2>/dev/null || true
+        sudo find . -name "modules.builtin" -delete 2>/dev/null || true
+        sudo find . -name "Module.symvers" -delete 2>/dev/null || true
+        
+        echo "📁 清理后目录状态:"
+        ls -la
+        echo ""
 
     - name: Install dependencies
       run: |
@@ -105,12 +110,16 @@ jobs:
         if [ ! -f "./build.sh" ]; then
           echo "❌ 错误: build.sh 文件不存在"
           echo "💡 请确保仓库包含构建脚本"
+          echo "📋 当前目录内容:"
+          ls -la
           exit 1
         fi
         
         if [ ! -d "arch/arm64/configs" ]; then
           echo "❌ 错误: 内核配置目录不存在"
           echo "💡 请检查仓库结构是否正确"
+          echo "📋 当前目录结构:"
+          find . -maxdepth 2 -type d | sort
           exit 1
         fi
         
@@ -144,6 +153,7 @@ jobs:
         if ! command -v clang >/dev/null 2>&1; then
           echo "❌ 错误: clang 工具链未正确设置"
           echo "💡 请检查 TOOLCHAIN_PATH: $TOOLCHAIN_PATH"
+          echo "📋 工具链目录内容:"
           ls -la $TOOLCHAIN_PATH/bin/ 2>/dev/null || echo "工具链目录为空"
           exit 1
         fi
@@ -165,6 +175,8 @@ jobs:
           BUILD_ARGS="$BUILD_ARGS --aosp"
         elif [ "${{ github.event.inputs.build_type }}" = "miui" ]; then
           BUILD_ARGS="$BUILD_ARGS --miui"
+        elif [ "${{ github.event.inputs.build_type }}" = "all" ]; then
+          BUILD_ARGS="$BUILD_ARGS --aosp --miui"
         fi
         
         chmod +x ./build.sh
@@ -178,37 +190,57 @@ jobs:
           echo "❌ 构建失败，退出代码: $BUILD_EXIT_CODE"
           echo "🔍 详细错误分析:"
           
-          # 检查常见错误
-          if [ $BUILD_EXIT_CODE -eq 1 ]; then
-            echo "💡 错误类型: 参数或配置错误"
-            echo "   可能原因: 设备配置错误、参数不匹配"
-          elif [ $BUILD_EXIT_CODE -eq 2 ]; then
-            echo "💡 错误类型: 编译错误"
-            echo "   可能原因: 代码冲突、依赖缺失"
-          else
-            echo "💡 错误类型: 未知错误"
-          fi
+          # 根据退出代码提供具体错误信息
+          case $BUILD_EXIT_CODE in
+            1)
+              echo "💡 错误类型: 参数或配置错误"
+              echo "   可能原因:"
+              echo "   - 设备 [${{ github.event.inputs.device }}] 配置不存在"
+              echo "   - 构建参数不匹配"
+              echo "   - 环境变量设置错误"
+              ;;
+            2)
+              echo "💡 错误类型: 编译错误"
+              echo "   可能原因:"
+              echo "   - 代码冲突或语法错误"
+              echo "   - 头文件缺失"
+              echo "   - 工具链不兼容"
+              ;;
+            127)
+              echo "💡 错误类型: 命令未找到"
+              echo "   可能原因: build.sh 脚本不存在或没有执行权限"
+              ;;
+            *)
+              echo "💡 错误类型: 未知错误 (退出代码: $BUILD_EXIT_CODE)"
+              echo "   可能原因: 内存不足、磁盘空间不足或其他系统错误"
+              ;;
+          esac
           
-          # 检查构建产物
+          # 检查构建状态
           echo "📁 检查构建状态:"
           if [ -d "out" ]; then
-            echo "   out/ 目录存在"
+            echo "   ✅ out/ 目录存在"
             if [ -f "out/arch/arm64/boot/Image" ]; then
               echo "   ✅ 内核镜像已生成"
+              echo "   📏 镜像大小: $(ls -lh out/arch/arm64/boot/Image | awk '{print $5}')"
             else
               echo "   ❌ 内核镜像未生成"
+              echo "   📋 out/arch/arm64/boot/ 目录内容:"
+              ls -la out/arch/arm64/boot/ 2>/dev/null || echo "   目录不存在"
             fi
           else
-            echo "   ❌ out/ 目录不存在，编译未开始"
+            echo "   ❌ out/ 目录不存在，编译可能未开始"
           fi
           
-          # 检查配置问题
+          # 检查配置状态
           echo "🔧 检查配置状态:"
           if [ -f "out/.config" ]; then
             echo "   ✅ 配置已生成"
             # 检查关键配置
-            if grep -q "CONFIG_KSU" out/.config 2>/dev/null; then
-              echo "   ℹ️  KSU配置存在"
+            if ${{ github.event.inputs.include_ksu == 'true' }} && grep -q "CONFIG_KSU=y" out/.config 2>/dev/null; then
+              echo "   ✅ KSU配置已启用"
+            elif ${{ github.event.inputs.include_ksu == 'true' }}; then
+              echo "   ❌ KSU配置未启用"
             fi
           else
             echo "   ❌ 配置未生成，defconfig可能有问题"
@@ -217,19 +249,28 @@ jobs:
           exit $BUILD_EXIT_CODE
         fi
 
-    - name: Clean build artifacts
-      if: always()
+    - name: Clean build artifacts after success
+      if: success()
       run: |
-        echo "🧹 清理构建产物..."
-        # 保留刷机包，清理其他文件
+        echo "🧹 构建成功，清理中间文件..."
+        # 保留刷机包，清理其他中间文件
         sudo rm -rf out/ anykernel/ .dts.bak/ 2>/dev/null || true
         sudo find . -name "*.o" -delete 2>/dev/null || true
         sudo find . -name "*.cmd" -delete 2>/dev/null || true
         sudo find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
         
-        echo "📁 剩余产物:"
-        ls -la *.zip 2>/dev/null || echo "   无刷机包文件"
-        du -sh . || true
+        echo "📁 最终产物:"
+        ls -la *.zip 2>/dev/null && echo "✅ 刷机包已生成" || echo "❌ 未找到刷机包"
+
+    - name: Clean build artifacts on failure
+      if: failure()
+      run: |
+        echo "🧹 构建失败，保留调试文件..."
+        # 失败时保留out目录用于调试
+        echo "📁 保留调试文件用于分析"
+        if [ -d "out" ]; then
+          echo "📏 out目录大小: $(du -sh out | cut -f1)"
+        fi
 
     - name: Show ccache stats
       run: ccache -s
@@ -242,37 +283,13 @@ jobs:
           *.zip
         retention-days: 7
 
-    - name: Debug info on failure
-      if: failure()
-      run: |
-        echo "🔍 构建失败调试信息:"
-        echo "📋 工作目录内容:"
-        ls -la
-        echo ""
-        echo "📋 内核配置状态:"
-        if [ -f "arch/arm64/configs/${{ github.event.inputs.device }}_defconfig" ]; then
-          echo "✅ 设备配置存在"
-        else
-          echo "❌ 设备配置不存在"
-        fi
-        echo ""
-        echo "📋 工具链状态:"
-        which clang && clang --version | head -1 || echo "clang不可用"
-        echo ""
-        echo "📋 构建目录状态:"
-        if [ -d "out" ]; then
-          find out -name "*.o" | head -5 | xargs file 2>/dev/null || true
-        else
-          echo "out目录不存在"
-        fi
-
-    - name: Upload error logs
+    - name: Upload error logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: ${{ github.event.inputs.device }}-error-debug
         path: |
-          out/.config
+          out/
           arch/arm64/configs/${{ github.event.inputs.device }}_defconfig
         retention-days: 3
-      continue-on-error: true  # 即使上传失败也不停止工作流
+      continue-on-error: true
