@@ -48,7 +48,7 @@ jobs:
     - name: Checkout source
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # 改为0获取完整历史，避免浅克隆问题
+        fetch-depth: 1
 
     - name: Clean workspace
       run: |
@@ -59,7 +59,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3 libelf-dev
+        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3
 
     - name: Setup toolchain
       run: |
@@ -67,88 +67,29 @@ jobs:
         cd $HOME/zyc-clang
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
         tar -zxf Clang-15.0.7-20251111.tar.gz
-        # 设置正确的工具链路径
-        export TOOLCHAIN_PATH="$HOME/zyc-clang"
-        echo "TOOLCHAIN_PATH=$TOOLCHAIN_PATH" >> $GITHUB_ENV
+        cd $GITHUB_WORKSPACE
 
     - name: Build kernel
       run: |
         set -e
         
-        # 设置环境变量
+        # 设置环境
         export PATH="$HOME/zyc-clang/bin:$PATH"
-        export TOOLCHAIN_PATH="$HOME/zyc-clang"
-        export CCACHE_DIR="$HOME/.cache/ccache_mikernel"
-        
-        # 创建ccache目录
-        mkdir -p $CCACHE_DIR
         
         # 构建参数
         BUILD_ARGS="${{ github.event.inputs.device }}"
         [ "${{ github.event.inputs.include_ksu }}" = "true" ] && BUILD_ARGS="$BUILD_ARGS ksu"
+        [ "${{ github.event.inputs.build_type }}" = "aosp" ] && BUILD_ARGS="$BUILD_ARGS --aosp"
+        [ "${{ github.event.inputs.build_type }}" = "miui" ] && BUILD_ARGS="$BUILD_ARGS --miui"
+        [ "${{ github.event.inputs.build_type }}" = "all" ] && BUILD_ARGS="$BUILD_ARGS --aosp --miui"
         
-        # 根据构建类型设置参数
-        case "${{ github.event.inputs.build_type }}" in
-          "aosp") BUILD_ARGS="$BUILD_ARGS --aosp" ;;
-          "miui") BUILD_ARGS="$BUILD_ARGS --miui" ;;
-          "all") BUILD_ARGS="$BUILD_ARGS --aosp --miui" ;;
-        esac
-        
-        echo "构建参数: $BUILD_ARGS"
-        
-        # 给构建脚本执行权限
         chmod +x ./build.sh
-        
-        # 检查脚本是否存在
-        if [ ! -f "./build.sh" ]; then
-          echo "❌ 构建脚本不存在"
-          exit 1
-        fi
         
         # 执行构建
         echo "🚀 开始构建内核..."
-        if ./build.sh $BUILD_ARGS; then
-          echo "✅ 构建成功"
-          
-          # 检查生成的zip文件
-          echo "📦 检查生成的刷机包:"
-          ls -la *.zip || echo "⚠ 未找到zip文件"
-        else
-          echo "❌ 构建失败"
-          
-          # 错误分析
-          echo "🔍 错误分析:"
-          
-          # 检查常见错误
-          if [ -f "build.log" ]; then
-            echo "构建日志内容:"
-            tail -50 build.log
-            
-            # 检查特定错误模式
-            if grep -q "error:" build.log; then
-              echo "❌ 编译错误:"
-              grep -i "error:" build.log | head -10
-            fi
-            
-            if grep -q "undefined reference" build.log; then
-              echo "❌ 链接错误:"
-              grep -i "undefined reference" build.log | head -5
-            fi
-            
-            if grep -q "conflict" build.log; then
-              echo "❌ 冲突错误:"
-              grep -i "conflict" build.log | head -5
-            fi
-          fi
-          exit 1
-        fi
-
-    - name: List generated files
-      run: |
-        echo "📁 工作目录内容:"
-        ls -la
-        echo "📦 生成的zip文件:"
-        ls -la *.zip || echo "没有找到zip文件"
+        ./build.sh $BUILD_ARGS
+        
+        echo "✅ 构建成功完成"
 
     - name: Upload artifacts
       if: success()
@@ -158,14 +99,12 @@ jobs:
         path: "*.zip"
         retention-days: 7
 
-    - name: Debug on failure
+    - name: Cleanup on failure
       if: failure()
       run: |
-        echo "🔧 调试信息:"
-        echo "工作目录:"
-        pwd
-        ls -la
-        echo "构建脚本内容:"
-        head -50 ./build.sh
-        echo "环境变量:"
-        env | grep -E "(PATH|TOOLCHAIN|CCACHE)"
+        echo "❌ 构建失败"
+        # 简单的错误信息显示
+        if [ -f build.log ]; then
+          echo "📋 最后几行构建日志:"
+          tail -20 build.log || true
+        fi
