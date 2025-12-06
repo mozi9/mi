@@ -50,132 +50,33 @@ jobs:
       with:
         fetch-depth: 1
 
-    - name: Clean previous build artifacts
+    - name: Clean workspace
       run: |
-        echo "🧹 清理之前的构建产物..."
-        rm -rf out/ anykernel/ *.zip .dts.bak/ 2>/dev/null || true
+        rm -rf out/ anykernel/ *.zip .dts.bak/
         find . -name "*.o" -delete 2>/dev/null || true
         find . -name "*.cmd" -delete 2>/dev/null || true
-        find . -name ".tmp_*" -type d -exec rm -rf {} + 2>/dev/null || true
 
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3 tar file
+        sudo apt install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3
 
-    - name: Set short commit SHA
-      run: echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_ENV
-
-    - name: Cache ccache
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/ccache_mikernel
-        key: ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.include_ksu }}-${{ env.SHORT_SHA }}
-        restore-keys: |
-          ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.include_ksu }}-
-          ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}-
-          ${{ runner.os }}-ccache-${{ github.event.inputs.device }}-
-          ${{ runner.os }}-ccache-
-
-    - name: Setup zyc-clang toolchain
+    - name: Setup toolchain
       run: |
-        echo "🔧 设置工具链..."
         mkdir -p $HOME/zyc-clang
         cd $HOME/zyc-clang
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
         tar -zxf Clang-15.0.7-20251111.tar.gz
         cd $GITHUB_WORKSPACE
 
-    - name: Pre-check common conflict files
-      run: |
-        echo "🔍 预检查29个常见冲突文件..."
-        
-        # 定义常见冲突文件列表
-        CONFLICT_FILES=(
-          "drivers/Makefile"
-          "drivers/input/input.c"
-          "drivers/tty/pty.c"
-          "fs/Makefile"
-          "fs/dcache.c"
-          "fs/exec.c"
-          "fs/namei.c"
-          "fs/namespace.c"
-          "fs/notify/fdinfo.c"
-          "fs/open.c"
-          "fs/overlayfs/inode.c"
-          "fs/overlayfs/readdir.c"
-          "fs/overlayfs/super.c"
-          "fs/proc/cmdline.c"
-          "fs/proc/fd.c"
-          "fs/proc/task_mmu.c"
-          "fs/proc_namespace.c"
-          "fs/read_write.c"
-          "fs/readdir.c"
-          "fs/stat.c"
-          "fs/statfs.c"
-          "fs/susfs.c"
-          "include/linux/mount.h"
-          "include/linux/sched.h"
-          "include/linux/susfs.h"
-          "include/linux/susfs_def.h"
-          "kernel/kallsyms.c"
-          "kernel/sys.c"
-          "security/selinux/avc.c"
-        )
-        
-        echo "📋 检查文件存在性和冲突标记..."
-        
-        for file in "${CONFLICT_FILES[@]}"; do
-          if [ -f "$file" ]; then
-            echo -n "✅ $file - 存在"
-            
-            # 检查常见的冲突标记
-            if grep -q "<<<<<<<" "$file" || grep -q ">>>>>>>" "$file"; then
-              echo " ❌ 发现Git冲突标记!"
-              echo "   冲突位置:"
-              grep -n "<<<<<<<" "$file" | head -3
-            elif grep -q "CONFIG_" "$file" && grep -q "#ifdef" "$file"; then
-              echo " ⚠️ 可能包含配置冲突"
-            else
-              echo " ✅ 无冲突标记"
-            fi
-            
-            # 检查文件大小和修改时间
-            file_info=$(ls -la "$file" | awk '{print $5, $6, $7, $8}')
-            echo "   信息: $file_info"
-            
-          else
-            echo "❌ $file - 文件不存在"
-          fi
-        done
-        
-        echo ""
-        echo "🔧 检查KernelSU集成..."
-        if [ "${{ github.event.inputs.include_ksu }}" = "true" ]; then
-          if [ -d "drivers/kernelsu" ] || [ -d "KernelSU" ]; then
-            echo "✅ KernelSU目录存在"
-            # 检查KSU相关的修改
-            if grep -r "kernelsu" drivers/Makefile 2>/dev/null || grep -r "kernelsu" fs/Makefile 2>/dev/null; then
-              echo "✅ KernelSU已集成到Makefile"
-            else
-              echo "⚠️ KernelSU可能未正确集成到Makefile"
-            fi
-          else
-            echo "❌ KernelSU目录不存在"
-          fi
-        fi
-
-    - name: Build kernel with detailed conflict detection
+    - name: Build kernel
       run: |
         set -e
         
-        echo "🚀 开始构建内核..."
-        
-        # 设置环境变量
-        export TOOLCHAIN_PATH="$HOME/zyc-clang"
+        # 设置环境
         export PATH="$HOME/zyc-clang/bin:$PATH"
         
-        # 构建命令参数
+        # 构建参数
         BUILD_ARGS="${{ github.event.inputs.device }}"
         [ "${{ github.event.inputs.include_ksu }}" = "true" ] && BUILD_ARGS="$BUILD_ARGS ksu"
         [ "${{ github.event.inputs.build_type }}" = "aosp" ] && BUILD_ARGS="$BUILD_ARGS --aosp"
@@ -184,11 +85,11 @@ jobs:
         
         chmod +x ./build.sh
         
-        # 执行构建并捕获输出
-        if ! ./build.sh $BUILD_ARGS 2>&1 | tee build_output.log; then
-          echo "❌ 构建失败，分析29个常见文件的冲突..."
+        # 执行构建
+        if ! ./build.sh $BUILD_ARGS 2>&1 | tee build.log; then
+          echo "❌ 构建失败"
           
-          # 定义常见冲突文件
+          # 分析错误
           CONFLICT_FILES=(
             "drivers/Makefile" "drivers/input/input.c" "drivers/tty/pty.c"
             "fs/Makefile" "fs/dcache.c" "fs/exec.c" "fs/namei.c" "fs/namespace.c"
@@ -200,151 +101,51 @@ jobs:
             "kernel/sys.c" "security/selinux/avc.c"
           )
           
-          # 分析每个文件的错误
+          # 检查常见错误模式
+          echo "🔍 错误分析:"
+          
+          # Git冲突
+          if grep -q "<<<<<<<" build.log; then
+            echo "❌ Git冲突:"
+            grep -B2 -A2 "<<<<<<<" build.log | head -5
+          fi
+          
+          # 文件相关错误
           for file in "${CONFLICT_FILES[@]}"; do
-            if grep -q "$file" build_output.log; then
-              echo ""
-              echo "🔍 文件 $file 发现错误:"
+            if grep -q "$file" build.log; then
+              echo "📄 $file 相关错误:"
+              grep -A3 -B1 "$file" build.log | head -5
               
-              # 提取该文件相关的错误信息
-              grep -A 3 -B 3 "$file" build_output.log | head -10
-              
-              # 检查文件中的具体问题
-              if [ -f "$file" ]; then
-                echo "📄 文件内容检查:"
-                
-                # 检查Git冲突标记
-                if grep -q "<<<<<<<" "$file"; then
-                  echo "❌ 发现Git冲突标记:"
-                  grep -n "<<<<<<<" "$file" | head -2
-                fi
-                
-                # 检查语法错误
-                if echo "$file" | grep -q "\.c$"; then
-                  echo "🔧 尝试语法检查:"
-                  gcc -fsyntax-only -Iinclude -Iarch/arm64/include "$file" 2>&1 | head -5 || true
-                fi
-                
-                # 检查头文件包含
-                if grep -q "#include" "$file"; then
-                  missing_includes=$(grep "#include" "$file" | while read inc; do
-                    header=$(echo "$inc" | sed 's/.*#include *[<"]\([^>"]*\)[>"].*/\1/')
-                    if [ ! -f "include/$header" ] && [ ! -f "arch/arm64/include/$header" ]; then
-                      echo "可能缺失: $header"
-                    fi
-                  done)
-                  if [ -n "$missing_includes" ]; then
-                    echo "⚠️ 头文件问题:"
-                    echo "$missing_includes" | head -3
-                  fi
-                fi
+              # 检查文件中的冲突标记
+              if [ -f "$file" ] && grep -q "<<<<<<<" "$file"; then
+                echo "  ⚠️ 文件存在Git冲突标记"
+                grep -n "<<<<<<<" "$file" | head -2
               fi
             fi
           done
           
-          # 检查常见的错误模式
-          echo ""
-          echo "🔧 常见错误模式分析:"
-          
-          # 1. 函数重复定义
-          if grep -q "redefinition of" build_output.log; then
-            echo "❌ 函数重复定义:"
-            grep "redefinition of" build_output.log | head -3
-          fi
-          
-          # 2. 未定义的引用
-          if grep -q "undefined reference to" build_output.log; then
-            echo "❌ 未定义的引用:"
-            grep "undefined reference to" build_output.log | head -3
-          fi
-          
-          # 3. 类型冲突
-          if grep -q "conflicting types for" build_output.log; then
-            echo "❌ 类型冲突:"
-            grep -A 2 -B 2 "conflicting types for" build_output.log | head -5
-          fi
-          
-          # 4. Makefile错误
-          if grep -q "Makefile:" build_output.log; then
-            echo "❌ Makefile错误:"
-            grep -A 2 "Makefile:" build_output.log | head -5
-          fi
-          
-          # 5. 缺少声明
-          if grep -q "implicit declaration" build_output.log; then
-            echo "❌ 隐式声明警告:"
-            grep "implicit declaration" build_output.log | head -3
-          fi
-          
-          # 显示具体的错误文件和行号
-          echo ""
-          echo "📍 错误精确定位:"
-          grep -E "error:|warning:" build_output.log | head -10 | while read error_line; do
-            if echo "$error_line" | grep -q ":[0-9]*:[0-9]*:"; then
-              file_path=$(echo "$error_line" | cut -d: -f1)
-              line_num=$(echo "$error_line" | cut -d: -f2)
-              error_msg=$(echo "$error_line" | cut -d: -f4-)
-              
-              # 检查是否是29个常见文件之一
-              for conflict_file in "${CONFLICT_FILES[@]}"; do
-                if [ "$file_path" = "$conflict_file" ]; then
-                  echo "🎯 重点文件: $file_path:$line_num"
-                  echo "   💬 $error_msg"
-                  
-                  # 显示错误上下文
-                  if [ -f "$file_path" ] && [ -n "$line_num" ]; then
-                    echo "   📝 代码上下文:"
-                    sed -n "$((line_num-2)),$((line_num+2))p" "$file_path" 2>/dev/null | while read code; do
-                      echo "      $code"
-                    done
-                  fi
-                  break
-                fi
-              done
-            fi
+          # 常见错误类型
+          grep -E "error:|undefined reference|conflicting types" build.log | head -10 | while read error; do
+            echo "💥 $error"
           done
           
-          echo ""
-          echo "💡 解决建议:"
-          echo "1. 检查上述29个文件中的Git冲突标记 (<<<<<<<, >>>>>>>)"
-          echo "2. 验证函数声明和定义是否一致"
-          echo "3. 检查头文件包含是否正确"
-          echo "4. 确认KernelSU集成是否完整"
-          echo "5. 查看具体的错误文件和行号进行修复"
+          # 显示错误文件和行号
+          echo "📍 错误位置:"
+          grep -E ":[0-9]+:[0-9]+:" build.log | head -5 | while read line; do
+            file=$(echo "$line" | cut -d: -f1)
+            line_num=$(echo "$line" | cut -d: -f2)
+            echo "  $file:$line_num"
+          done
           
           exit 1
         fi
         
         echo "✅ 构建成功"
 
-    - name: Check build artifacts
-      if: success()
-      run: |
-        echo "📦 检查构建产物..."
-        if ls *.zip 1> /dev/null 2>&1; then
-          echo "✅ 找到刷机包:"
-          ls -lh *.zip
-        else
-          echo "❌ 未找到刷机包"
-          exit 1
-        fi
-
-    - name: Clean build artifacts
-      if: always()
-      run: |
-        echo "🧹 清理构建文件..."
-        rm -rf build_output.log 2>/dev/null || true
-        if [ "${{ success() }}" = "true" ]; then
-          rm -rf out/ anykernel/ .dts.bak/ 2>/dev/null || true
-          find . -name "*.o" -delete 2>/dev/null || true
-          find . -name "*.cmd" -delete 2>/dev/null || true
-        fi
-
-    - name: Upload build artifacts
+    - name: Upload artifacts
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}${{ github.event.inputs.include_ksu == 'true' && '-ksu' || '' }}-kernel
-        path: |
-          *.zip
+        name: kernel-${{ github.event.inputs.device }}-${{ github.event.inputs.build_type }}${{ github.event.inputs.include_ksu == 'true' && '-ksu' || '' }}
+        path: "*.zip"
         retention-days: 7
