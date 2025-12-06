@@ -221,7 +221,7 @@ setup_kernelsu() {
     
     print_step "设置 SukiSU-Ultra"
     
-    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s builtin; then
+    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/tmp-builtin/kernel/setup.sh" | bash -s aim; then
         print_success "SukiSU-Ultra 设置完成"
     else
         error_exit "SukiSU-Ultra 设置失败"
