@@ -46,7 +46,7 @@ print_success() {
 
 # 信息函数
 print_info() {
-    color_echo "$blue" "ℹℹ $1"
+    color_echo "$blue" "ℹ $1"
 }
 
 # 警告函数
@@ -221,7 +221,7 @@ setup_kernelsu() {
     
     print_step "设置 SukiSU-Ultra"
     
-    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/tmp-builtin/kernel/setup.sh" | bash -s aim; then
+    if curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s builtin; then
         print_success "SukiSU-Ultra 设置完成"
     else
         error_exit "SukiSU-Ultra 设置失败"
@@ -573,11 +573,11 @@ main() {
     print_step "开始内核构建流程"
     local start_time=$(date +%s)
     
-    # 环境准备（按照文档2的顺序）
+    # 环境准备
     prepare_anykernel
     setup_kernelsu
     
-    # AOSP构建（按照文档2的顺序，先构建AOSP）
+    # AOSP构建
     if $BUILD_AOSP; then
         print_step "开始AOSP内核构建流程"
         build_aosp_kernel
@@ -585,7 +585,7 @@ main() {
         print_success "AOSP内核构建完成"
     fi
     
-    # MIUI构建（按照文档2的顺序，后构建MIUI）
+    # MIUI构建
     if $BUILD_MIUI; then
         print_step "开始MIUI内核构建流程"
         modify_miui_dts "MIUI"
@@ -608,4 +608,3 @@ main() {
 
 # 执行主函数
 main "$@"
-                                                  
